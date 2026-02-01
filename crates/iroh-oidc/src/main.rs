@@ -15,6 +15,7 @@ use openidconnect::{
 use openidconnect::{EndpointMaybeSet, reqwest};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::net::IpAddr;
 use tower_sessions::cookie::time::Duration;
 use tower_sessions::{MemoryStore, Session, SessionManagerLayer, session};
 
@@ -24,6 +25,8 @@ const SESSION_KEY_NONCE: &str = "nonce";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Config {
+    listen_address: IpAddr,
+    listen_port: u16,
     base_url: String,
     providers: HashMap<String, ProviderConfig>,
 }
@@ -85,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Figment::new()
         .merge(figment::providers::Toml::file("config.local.toml"))
         .merge(figment::providers::Env::prefixed("APP_"))
+        .join(figment::providers::Toml::file("config.default.toml"))
         .extract::<Config>()?;
 
     let providers = init_providers(&config.base_url, config.providers).await?;
@@ -102,7 +106,9 @@ async fn main() -> anyhow::Result<()> {
         .layer(session_layer)
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    let listener = tokio::net::TcpListener::bind((config.listen_address, config.listen_port))
+        .await
+        .unwrap();
     axum::serve(listener, app).await.unwrap();
 
     Ok(())
