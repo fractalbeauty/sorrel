@@ -1,4 +1,7 @@
-use axum::extract::{Path, Query, State};
+mod database;
+
+use crate::database::Database;
+use axum::extract::{FromRef, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Router, routing::get};
@@ -16,6 +19,7 @@ use openidconnect::{EndpointMaybeSet, reqwest};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::sync::Arc;
 use tower_sessions::cookie::time::Duration;
 use tower_sessions::{MemoryStore, Session, SessionManagerLayer, session};
 
@@ -56,9 +60,10 @@ struct Provider {
     dangerously_fix_token_hash_len: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FromRef)]
 struct AppState {
-    providers: HashMap<String, Provider>,
+    database: Database,
+    providers: Arc<HashMap<String, Provider>>,
 }
 
 // TODO: remove
@@ -86,14 +91,19 @@ where
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = Figment::new()
-        .merge(figment::providers::Toml::file("config.local.toml"))
+        .merge(figment::providers::Toml::file("local/config.toml"))
         .merge(figment::providers::Env::prefixed("APP_"))
         .join(figment::providers::Toml::file("config.default.toml"))
         .extract::<Config>()?;
 
+    let database = database::Database::open_file("./local/database.sqlite").await?;
+
     let providers = init_providers(&config.base_url, config.providers).await?;
 
-    let state = AppState { providers };
+    let state = AppState {
+        database,
+        providers: Arc::new(providers),
+    };
 
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store)
@@ -289,5 +299,10 @@ async fn api_callback(
             .unwrap_or("<not provided>"),
     );
 
-    Ok("meow".to_string())
+    let user = state
+        .database
+        .authenticate(&provider_id, claims.subject().as_str())
+        .await?;
+
+    Ok(user.id.to_string())
 }
