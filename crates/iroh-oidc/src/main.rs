@@ -144,10 +144,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/code/confirm", post(post_confirm_form))
         .route("/code/provider", get(get_provider_form))
         .route("/code/done", get(get_done_page))
-        .route("/api/device/start", post(api_device_start))
-        .route("/api/device/poll", post(api_device_poll))
-        .route("/auth/login/{provider_id}", get(api_login))
-        .route("/auth/callback/{provider_id}", get(api_callback))
+        .route("/api/oauth/device", post(oauth_device))
+        .route("/api/oauth/device/poll", post(oauth_device_poll))
+        .route("/oidc/redirect/{provider_id}", get(oidc_redirect))
+        .route("/oidc/callback/{provider_id}", get(oidc_callback))
         .layer(session_layer)
         .layer(config.ip_source.clone().into_extension())
         .with_state(state);
@@ -193,7 +193,7 @@ async fn init_providers(
             Some(ClientSecret::new(config.client_secret.clone())),
         )
         // Set the URL the user will be redirected to after the authorization process.
-        .set_redirect_uri(RedirectUrl::new(format!("{base_url}/auth/callback/{id}"))?);
+        .set_redirect_uri(RedirectUrl::new(format!("{base_url}/oidc/callback/{id}"))?);
 
         let provider = Provider {
             http_client,
@@ -312,7 +312,7 @@ async fn get_provider_form(State(state): State<AppState>) -> Result<Markup, AppE
         ul {
             @for provider_id in state.providers.keys() {
                 li {
-                    a href={ "/auth/login/" (provider_id) } { (provider_id) }
+                    a href={ "/oidc/redirect/" (provider_id) } { (provider_id) }
                 }
             }
         }
@@ -408,7 +408,7 @@ struct DeviceStartRequest {
 }
 
 #[axum::debug_handler]
-async fn api_device_start(
+async fn oauth_device(
     State(state): State<AppState>,
     ClientIp(client_ip): ClientIp,
     Json(request): Json<DeviceStartRequest>,
@@ -480,7 +480,7 @@ enum DevicePollResponse {
     },
 }
 
-async fn api_device_poll(
+async fn oauth_device_poll(
     State(state): State<AppState>,
     Json(request): Json<DevicePollRequest>,
 ) -> Result<Json<DevicePollResponse>, AppError> {
@@ -513,7 +513,7 @@ async fn api_device_poll(
     }))
 }
 
-async fn api_login(
+async fn oidc_redirect(
     State(state): State<AppState>,
     Path(provider_id): Path<String>,
     session: Session,
@@ -580,7 +580,7 @@ struct CallbackQuery {
     state: String,
 }
 
-async fn api_callback(
+async fn oidc_callback(
     State(state): State<AppState>,
     Path(provider_id): Path<String>,
     Query(query): Query<CallbackQuery>,
