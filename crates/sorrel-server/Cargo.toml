@@ -1,9 +1,11 @@
 [package]
-name = "iroh-oidc"
+name = "sorrel-server"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+sorrel-api = { path = "../sorrel-api", features = ["axum"] }
+
 anyhow = "1.0.100"
 axum = { version = "0.8.7", features = ["macros"] }
 axum-client-ip = "1.3.1"

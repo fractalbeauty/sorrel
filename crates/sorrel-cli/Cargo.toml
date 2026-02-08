@@ -1,10 +1,10 @@
 [package]
-name = "iroh-keyserver-cli"
+name = "sorrel-cli"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-iroh-oidc = { path = "../iroh-oidc" }
+sorrel-api = { path = "../sorrel-api" }
 
 anyhow = "1.0.101"
 axum = "0.8.8"

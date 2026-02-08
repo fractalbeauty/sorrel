@@ -1369,57 +1369,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iroh-keyserver-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "base64 0.22.1",
- "clap",
- "env_logger",
- "figment",
- "hex",
- "iroh-oidc",
- "log",
- "rand 0.8.5",
- "reqwest 0.13.2",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "url",
- "uuid",
- "webbrowser",
-]
-
-[[package]]
-name = "iroh-oidc"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "axum-client-ip",
- "base64 0.22.1",
- "env_logger",
- "figment",
- "hmac",
- "log",
- "maud",
- "monostate",
- "openidconnect",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "serde_with",
- "sha2",
- "snafu",
- "sqlx",
- "tokio",
- "tower-sessions",
- "uuid",
-]
-
-[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2744,6 +2693,71 @@ checksum = "17129e116933cf371d018bb80ae557e889637989d8638274fb25622827b03881"
 dependencies = [
  "libc",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "sorrel-api"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "monostate",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "snafu",
+ "uuid",
+]
+
+[[package]]
+name = "sorrel-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "clap",
+ "env_logger",
+ "figment",
+ "hex",
+ "log",
+ "rand 0.8.5",
+ "reqwest 0.13.2",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sorrel-api",
+ "tokio",
+ "url",
+ "uuid",
+ "webbrowser",
+]
+
+[[package]]
+name = "sorrel-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "axum-client-ip",
+ "base64 0.22.1",
+ "env_logger",
+ "figment",
+ "hmac",
+ "log",
+ "maud",
+ "monostate",
+ "openidconnect",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "sha2",
+ "snafu",
+ "sorrel-api",
+ "sqlx",
+ "tokio",
+ "tower-sessions",
+ "uuid",
 ]
 
 [[package]]

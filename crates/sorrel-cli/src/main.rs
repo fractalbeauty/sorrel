@@ -7,14 +7,14 @@ use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use clap::{Args, Parser, Subcommand};
 use figment::Figment;
 use figment::providers::{Env, Serialized};
-use iroh_oidc::api::{
-    SessionInfoResponse, SessionListResponse, SessionRevokeRequest, SessionRevokeResponse,
-};
 use rand::{Rng, distributions::Alphanumeric};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use sorrel_api::sessions::{
+    SessionInfoResponse, SessionListResponse, SessionRevokeRequest, SessionRevokeResponse,
+};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -23,8 +23,8 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 #[derive(Parser)]
-#[command(name = "iroh-keyserver-cli")]
-#[command(about = "CLI for iroh-keyserver", long_about = None)]
+#[command(name = "sorrel-cli")]
+#[command(about = "CLI for sorrel", long_about = None)]
 struct Cli {
     #[command(flatten)]
     config: Config,
@@ -47,7 +47,7 @@ struct Config {
     #[clap(long)]
     base_url: Option<String>,
 
-    /// Client ID to use for authentication (default: iroh-keyserver-cli)
+    /// Client ID to use for authentication (default: sorrel-cli)
     #[clap(long)]
     client_id: Option<String>,
 
@@ -193,7 +193,7 @@ async fn main() -> anyhow::Result<()> {
 
             log::info!("List keys raw response: {:?}", response);
 
-            let response: iroh_oidc::api::ListKeysResponse =
+            let response: sorrel_api::keys::ListKeysResponse =
                 serde_json::from_value(response).context("Failed to parse list keys response")?;
 
             log::info!("List keys response: {:?}", response);
@@ -217,7 +217,7 @@ async fn main() -> anyhow::Result<()> {
             let response = Client::new()
                 .post(format!("{base_url}/api/keys"))
                 .bearer_auth(&token)
-                .json(&iroh_oidc::api::SetKeyRequest {
+                .json(&sorrel_api::keys::SetKeyRequest {
                     app,
                     public_key: public_key.try_into().unwrap(),
                 })
@@ -230,7 +230,7 @@ async fn main() -> anyhow::Result<()> {
 
             log::info!("Set key raw response: {:?}", response);
 
-            let response: iroh_oidc::api::SetKeyResponse =
+            let response: sorrel_api::keys::SetKeyResponse =
                 serde_json::from_value(response).context("Failed to parse set key response")?;
 
             log::info!("Set key response: {:?}", response);
@@ -272,7 +272,7 @@ async fn auth_with_code(config: &Config) -> anyhow::Result<String> {
     let client_id = config
         .client_id
         .as_deref()
-        .unwrap_or("iroh-keyserver-cli")
+        .unwrap_or("sorrel-cli")
         .to_owned();
 
     let listen_address = config
@@ -305,7 +305,7 @@ async fn auth_with_code(config: &Config) -> anyhow::Result<String> {
     let redirect_uri = format!("{}/callback", redirect_base_url);
 
     // Generate the authorization URL
-    let device_name = "iroh-keyserver-cli";
+    let device_name = "sorrel-cli";
     let auth_url = format!(
         "{}/api/oauth/authorize?client_id={}&response_type=code&redirect_uri={}&code_challenge={}&code_challenge_method=S256&state={}&device_name={}",
         base_url, client_id, redirect_uri, code_challenge, csrf_token, device_name
