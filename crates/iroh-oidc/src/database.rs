@@ -1,4 +1,5 @@
 use sqlx::sqlite::SqlitePoolOptions;
+use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -14,6 +15,22 @@ pub struct DeviceCode {
     pub is_used: bool,
     pub device_name_hint: Option<String>,
     pub device_ip_hint: Option<String>,
+}
+
+pub struct AuthCode {
+    pub auth_code_hash: Vec<u8>,
+    pub client_id: String,
+    pub redirect_uri: String,
+    pub code_challenge: Vec<u8>,
+    pub expires_at: i64,
+    pub user_id: Uuid,
+    pub is_used: bool,
+}
+
+pub struct Session {
+    pub token_hash: Vec<u8>,
+    pub last_used_at: i64,
+    pub user_id: Uuid,
 }
 
 pub struct User {
@@ -49,6 +66,52 @@ impl Database {
         sqlx::migrate!("./migrations").run(&self.pool).await?;
 
         Ok(())
+    }
+
+    pub async fn create_auth_code(
+        &self,
+        auth_code_hash: &[u8],
+        client_id: &str,
+        redirect_uri: &str,
+        code_challenge: &[u8],
+        expires_at: i64,
+        user_id: Uuid,
+    ) -> anyhow::Result<()> {
+        sqlx::query!(
+            r#"
+            INSERT INTO auth_codes (auth_code_hash, client_id, redirect_uri, code_challenge, expires_at, user_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+            "#,
+            auth_code_hash,
+            client_id,
+            redirect_uri,
+            code_challenge,
+            expires_at,
+            user_id
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn get_auth_code_by_hash(
+        &self,
+        auth_code_hash: &[u8],
+    ) -> anyhow::Result<Option<AuthCode>> {
+        let row = sqlx::query_as!(
+            AuthCode,
+            r#"
+            SELECT auth_code_hash, client_id, redirect_uri, code_challenge, expires_at, user_id as "user_id: Uuid", is_used
+            FROM auth_codes
+            WHERE auth_code_hash = ?
+            "#,
+            auth_code_hash
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row)
     }
 
     pub async fn create_device_code(
@@ -209,4 +272,63 @@ impl Database {
 
         Ok(User { id: user_id })
     }
+
+    pub async fn create_session(&self, token_hash: &[u8], user_id: Uuid) -> sqlx::Result<()> {
+        let last_used_at = now();
+
+        sqlx::query!(
+            r#"
+            INSERT INTO sessions (token_hash, last_used_at, user_id)
+            VALUES (?, ?, ?)
+            "#,
+            token_hash,
+            last_used_at,
+            user_id
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn get_session(&self, token_hash: &[u8]) -> sqlx::Result<Option<Session>> {
+        let row = sqlx::query_as!(
+            Session,
+            r#"
+            SELECT token_hash, last_used_at, user_id as "user_id: Uuid"
+            FROM sessions
+            WHERE token_hash = ?
+            "#,
+            token_hash
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn update_session_last_used(&self, token_hash: &[u8]) -> sqlx::Result<()> {
+        let last_used_at = now();
+
+        sqlx::query!(
+            r#"
+            UPDATE sessions
+            SET last_used_at = ?
+            WHERE token_hash = ?
+            "#,
+            last_used_at,
+            token_hash
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+}
+
+fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }

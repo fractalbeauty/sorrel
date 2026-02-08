@@ -1,6 +1,8 @@
 mod database;
+mod session;
 
 use crate::database::Database;
+use crate::session::SessionGuard;
 use axum::extract::{FromRef, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
@@ -15,14 +17,16 @@ use figment::providers::Format;
 use hmac::{Hmac, Mac};
 use maud::{DOCTYPE, Markup, html};
 use openidconnect::core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata};
+use openidconnect::url::Url;
 use openidconnect::{
     AccessTokenHash, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointNotSet,
     EndpointSet, IssuerUrl, Nonce, OAuth2TokenResponse, PkceCodeChallenge, PkceCodeVerifier,
-    RedirectUrl, Scope, TokenResponse,
+    RedirectUrl, Scope, TokenResponse as _,
 };
 use openidconnect::{EndpointMaybeSet, reqwest};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use serde_with::serde_as;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -30,10 +34,25 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tower_sessions::cookie::time::Duration;
-use tower_sessions::{MemoryStore, Session, SessionManagerLayer, session};
+use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 
-const SESSION_KEY_DEVICE_CODE: &str = "device_code";
+const SESSION_KEY_AUTH: &str = "auth";
 const SESSION_KEY_OIDC: &str = "oidc";
+
+#[derive(Debug, Serialize, Deserialize)]
+enum AuthState {
+    /// State set when starting authorization code grant flow.
+    AuthCode {
+        client_id: String,
+        redirect_url: String,
+        redirect_state: String,
+        code_challenge: Vec<u8>,
+    },
+    /// State used in device authorization grant flow.
+    /// Set after user enters user code and confirms login.
+    /// Used after OIDC flow to link device code to user.
+    DeviceAuth { device_code_hash: Vec<u8> },
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OidcState {
@@ -44,7 +63,7 @@ struct OidcState {
 }
 
 #[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct Config {
     listen_address: IpAddr,
     listen_port: u16,
@@ -58,9 +77,11 @@ struct Config {
     user_code_secret: [u8; 32],
 
     providers: HashMap<String, ProviderConfig>,
+
+    clients: Vec<ClientConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ProviderConfig {
     issuer_url: String,
     client_id: String,
@@ -68,6 +89,13 @@ struct ProviderConfig {
     scopes: Vec<String>,
     #[serde(default)]
     dangerously_fix_token_hash_len: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ClientConfig {
+    name: String,
+    client_id: String,
+    redirect_urls: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +144,8 @@ where
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    env_logger::init();
+
     let config = Figment::new()
         .merge(figment::providers::Toml::file("local/config.toml"))
         .merge(figment::providers::Env::prefixed("APP_"))
@@ -136,16 +166,21 @@ async fn main() -> anyhow::Result<()> {
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store)
         .with_same_site(tower_sessions::cookie::SameSite::Lax)
-        .with_expiry(session::Expiry::OnInactivity(Duration::days(30)));
+        .with_expiry(tower_sessions::session::Expiry::OnInactivity(
+            Duration::days(30),
+        ));
 
     let app = Router::new()
         .route("/code", get(get_code_form))
         .route("/code/confirm", get(get_confirm_form))
         .route("/code/confirm", post(post_confirm_form))
-        .route("/code/provider", get(get_provider_form))
         .route("/code/done", get(get_done_page))
+        .route("/provider", get(get_provider_form))
+        .route("/api/oauth/authorize", get(oauth_authorize))
+        .route("/api/oauth/token", post(oauth_token))
         .route("/api/oauth/device", post(oauth_device))
         .route("/api/oauth/device/poll", post(oauth_device_poll))
+        .route("/api/session/info", get(session_info))
         .route("/oidc/redirect/{provider_id}", get(oidc_redirect))
         .route("/oidc/callback/{provider_id}", get(oidc_callback))
         .layer(session_layer)
@@ -296,13 +331,18 @@ async fn post_confirm_form(
         return Err(anyhow::anyhow!("invalid code").into());
     }
 
-    // Update session
+    // Set session auth state
     session
-        .insert(SESSION_KEY_DEVICE_CODE, device_code.device_code_hash)
+        .insert(
+            SESSION_KEY_AUTH,
+            AuthState::DeviceAuth {
+                device_code_hash: device_code.device_code_hash,
+            },
+        )
         .await?;
 
     // Redirect to provider selection
-    Ok(Redirect::to("/code/provider"))
+    Ok(Redirect::to("/provider"))
 }
 
 async fn get_provider_form(State(state): State<AppState>) -> Result<Markup, AppError> {
@@ -327,19 +367,283 @@ async fn get_done_page() -> Result<Markup, AppError> {
     })
 }
 
+#[derive(Deserialize)]
+struct AuthorizeQuery {
+    response_type: String,
+    client_id: String,
+    redirect_uri: String,
+    state: String,
+    code_challenge: String,
+    code_challenge_method: String,
+}
+
+fn make_error_redirect(
+    redirect_uri: &str,
+    state: &str,
+    error: &str,
+    error_description: &str,
+) -> Result<Redirect, AppError> {
+    Ok(Redirect::to(
+        Url::parse_with_params(
+            redirect_uri,
+            &[
+                ("error", error),
+                ("error_description", error_description),
+                ("state", state),
+            ],
+        )?
+        .as_str(),
+    ))
+}
+
+async fn oauth_authorize(
+    State(state): State<AppState>,
+    Query(query): Query<AuthorizeQuery>,
+    session: Session,
+) -> Result<Redirect, AppError> {
+    let client = state
+        .config
+        .clients
+        .iter()
+        .find(|c| c.client_id == query.client_id);
+    let Some(client) = client else {
+        // do not redirect to invalid redirect_uri
+        return Err(anyhow::anyhow!("unknown client_id").into());
+    };
+    if !client.redirect_urls.contains(&query.redirect_uri) {
+        // do not redirect to invalid redirect_uri
+        return Err(anyhow::anyhow!("invalid redirect_uri").into());
+    }
+
+    if query.response_type != "code" {
+        return make_error_redirect(
+            &query.redirect_uri,
+            &query.state,
+            "unsupported_response_type",
+            "only 'code' response_type is supported",
+        );
+    }
+    if query.code_challenge_method != "S256" {
+        return make_error_redirect(
+            &query.redirect_uri,
+            &query.state,
+            "invalid_request",
+            "only 'S256' code_challenge_method is supported",
+        );
+    }
+    if query.code_challenge.len() != 43 {
+        return make_error_redirect(
+            &query.redirect_uri,
+            &query.state,
+            "invalid_request",
+            "invalid code_challenge length",
+        );
+    }
+    let code_challenge = BASE64_URL_SAFE_NO_PAD
+        .decode(&query.code_challenge)
+        .map_err(|_e| anyhow::anyhow!("invalid code_challenge encoding"))?;
+
+    // Set session auth state
+    session
+        .insert(
+            SESSION_KEY_AUTH,
+            AuthState::AuthCode {
+                client_id: query.client_id,
+                redirect_url: query.redirect_uri,
+                redirect_state: query.state,
+                code_challenge,
+            },
+        )
+        .await?;
+
+    // Redirect to provider selection
+    Ok(Redirect::to("/provider"))
+}
+
+#[derive(Deserialize)]
+struct TokenRequest {
+    grant_type: String,
+    code: String,
+    redirect_uri: String,
+    client_id: String,
+    code_verifier: String,
+}
+
+#[derive(Serialize)]
+struct TokenResponse {
+    access_token: String,
+    token_type: String,
+    expires_in: i64,
+    refresh_token: String,
+}
+
+async fn oauth_token(
+    State(state): State<AppState>,
+    Json(request): Json<TokenRequest>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    // validate client_id
+    let client = state
+        .config
+        .clients
+        .iter()
+        .find(|c| c.client_id == request.client_id);
+    let Some(client) = client else {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "invalid_client"
+            })),
+        ));
+    };
+
+    if request.grant_type != "authorization_code" {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "unsupported_grant_type"
+            })),
+        ));
+    }
+
+    let auth_code_hash = {
+        let decoded = BASE64_URL_SAFE_NO_PAD
+            .decode(&request.code)
+            .map_err(|_e| anyhow::anyhow!("invalid code encoding"))?;
+        let mut arr = [0u8; 32];
+        if decoded.len() != 32 {
+            log::trace!("invalid code length: {}", decoded.len());
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "invalid_grant"
+                })),
+            ));
+        }
+        arr.copy_from_slice(&decoded);
+        Sha256::digest(&arr)
+    };
+
+    let auth_code = state
+        .database
+        .get_auth_code_by_hash(&auth_code_hash)
+        .await?;
+    let Some(auth_code) = auth_code else {
+        log::trace!("auth code not found for hash: {:x?}", auth_code_hash);
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "invalid_grant"
+            })),
+        ));
+    };
+
+    if request.client_id != auth_code.client_id {
+        log::trace!(
+            "client_id mismatch: {} != {}",
+            request.client_id,
+            auth_code.client_id
+        );
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "invalid_grant"
+            })),
+        ));
+    }
+    if request.redirect_uri != auth_code.redirect_uri {
+        log::trace!(
+            "redirect_uri mismatch: {} != {}",
+            request.redirect_uri,
+            auth_code.redirect_uri
+        );
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "invalid_grant"
+            })),
+        ));
+    }
+
+    let code_verifier_hash = {
+        let decoded = BASE64_URL_SAFE_NO_PAD
+            .decode(&request.code_verifier)
+            .map_err(|_e| anyhow::anyhow!("invalid code_verifier encoding"))?;
+        log::trace!("code_verifier decoded: {:x?}", decoded);
+        Sha256::digest(&decoded).to_vec()
+    };
+    log::trace!("code_verifier_hash: {:x?}", code_verifier_hash);
+    log::trace!("expected code_challenge: {:x?}", auth_code.code_challenge);
+    if code_verifier_hash.as_slice() != auth_code.code_challenge.as_slice() {
+        log::trace!(
+            "code_verifier mismatch: {:x?} != {:x?}",
+            code_verifier_hash,
+            auth_code.code_challenge
+        );
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "invalid_grant"
+            })),
+        ));
+    }
+
+    let plain_token = match session::create_session(&state.database, auth_code.user_id).await {
+        Ok(token) => token,
+        Err(e) => {
+            log::error!("failed to create session: {}", e);
+            return Ok((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "server_error",
+                })),
+            ));
+        }
+    };
+
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "access_token": plain_token,
+            "token_type": "Bearer",
+        })),
+    ))
+}
+
 const DEVICE_CODE_TTL: Duration = Duration::minutes(10);
 const DEVICE_POLL_INTERVAL: Duration = Duration::seconds(5);
 
-#[serde_as]
-#[derive(Serialize)]
-struct DeviceStartResponse {
-    #[serde_as(as = "serde_with::hex::Hex")]
-    device_code: DeviceCode,
-    user_code: UserCode,
-    verification_uri: String,
-    verification_uri_complete: String,
-    expires_in: i64,
-    interval: i64,
+const AUTH_CODE_TTL: Duration = Duration::minutes(5);
+
+#[derive(Serialize, Deserialize)]
+struct AuthCode([u8; 32]);
+
+impl AuthCode {
+    fn new() -> Self {
+        Self(rand::random::<[u8; 32]>())
+    }
+
+    fn hash(&self) -> [u8; 32] {
+        Sha256::digest(self.0).into()
+    }
+}
+
+impl AsRef<[u8]> for AuthCode {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl TryFrom<Vec<u8>> for AuthCode {
+    type Error = anyhow::Error;
+
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        if value.len() != 32 {
+            return Err(anyhow::anyhow!("invalid authorization code length"));
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&value);
+        Ok(AuthCode(arr))
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -405,6 +709,18 @@ impl UserCode {
 #[derive(Deserialize)]
 struct DeviceStartRequest {
     device_name: String,
+}
+
+#[serde_as]
+#[derive(Serialize)]
+struct DeviceStartResponse {
+    #[serde_as(as = "serde_with::hex::Hex")]
+    device_code: DeviceCode,
+    user_code: UserCode,
+    verification_uri: String,
+    verification_uri_complete: String,
+    expires_in: i64,
+    interval: i64,
 }
 
 #[axum::debug_handler]
@@ -497,19 +813,32 @@ async fn oauth_device_poll(
         return Err(anyhow::anyhow!("device code expired").into());
     }
 
-    if device_code.user_id.is_none() {
-        return Ok(Json(DevicePollResponse::Error {
-            error: "authorization_pending".to_string(),
-        }));
-    }
+    let user_id = match device_code.user_id {
+        Some(user_id) => user_id,
+        None => {
+            return Ok(Json(DevicePollResponse::Error {
+                error: "authorization_pending".to_string(),
+            }));
+        }
+    };
 
     state
         .database
         .set_device_code_used(&device_code_hash)
         .await?;
 
+    let plain_token = match session::create_session(&state.database, user_id).await {
+        Ok(token) => token,
+        Err(e) => {
+            log::error!("failed to create session: {}", e);
+            return Ok(Json(DevicePollResponse::Error {
+                error: "server_error".to_string(),
+            }));
+        }
+    };
+
     Ok(Json(DevicePollResponse::Success {
-        access_token: "stub access token".to_string(),
+        access_token: plain_token,
     }))
 }
 
@@ -522,20 +851,30 @@ async fn oidc_redirect(
         return Err(anyhow::anyhow!("unknown provider").into());
     };
 
-    let device_code_hash = session
-        .get::<Vec<u8>>(SESSION_KEY_DEVICE_CODE)
+    let auth_state = session
+        .get::<AuthState>(SESSION_KEY_AUTH)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("missing device code in session"))?;
-    let device_code = state
-        .database
-        .get_device_code_by_device_code(&device_code_hash)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("device code not found"))?;
-    if device_code.user_id.is_some() {
-        return Err(anyhow::anyhow!("device code already used").into());
-    }
-    if device_code.expires_at < SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64 {
-        return Err(anyhow::anyhow!("device code expired").into());
+        .ok_or_else(|| anyhow::anyhow!("missing auth state in session"))?;
+
+    match auth_state {
+        AuthState::AuthCode { .. } => {
+            // return Err(anyhow::anyhow!("authorization code flow not implemented").into());
+        }
+        AuthState::DeviceAuth { device_code_hash } => {
+            let device_code = state
+                .database
+                .get_device_code_by_device_code(&device_code_hash)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("device code not found"))?;
+            if device_code.user_id.is_some() {
+                return Err(anyhow::anyhow!("device code already used").into());
+            }
+            if device_code.expires_at
+                < SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64
+            {
+                return Err(anyhow::anyhow!("device code expired").into());
+            }
+        }
     }
 
     // Generate a PKCE challenge.
@@ -590,20 +929,30 @@ async fn oidc_callback(
         return Err(anyhow::anyhow!("unknown provider").into());
     };
 
-    let device_code_hash = session
-        .get::<Vec<u8>>(SESSION_KEY_DEVICE_CODE)
+    let auth_state = session
+        .get::<AuthState>(SESSION_KEY_AUTH)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("missing device code in session"))?;
-    let device_code = state
-        .database
-        .get_device_code_by_device_code(&device_code_hash)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("device code not found"))?;
-    if device_code.user_id.is_some() {
-        return Err(anyhow::anyhow!("device code already used").into());
-    }
-    if device_code.expires_at < SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64 {
-        return Err(anyhow::anyhow!("device code expired").into());
+        .ok_or_else(|| anyhow::anyhow!("missing auth state in session"))?;
+
+    match &auth_state {
+        AuthState::AuthCode { .. } => {
+            // return Err(anyhow::anyhow!("authorization code flow not implemented").into());
+        }
+        AuthState::DeviceAuth { device_code_hash } => {
+            let device_code = state
+                .database
+                .get_device_code_by_device_code(device_code_hash)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("device code not found"))?;
+            if device_code.user_id.is_some() {
+                return Err(anyhow::anyhow!("device code already used").into());
+            }
+            if device_code.expires_at
+                < SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64
+            {
+                return Err(anyhow::anyhow!("device code expired").into());
+            }
+        }
     }
 
     let OidcState {
@@ -671,10 +1020,56 @@ async fn oidc_callback(
         .authenticate(&provider_id, claims.subject().as_str())
         .await?;
 
-    state
-        .database
-        .set_device_code_user_id(&device_code_hash, user.id)
-        .await?;
+    match auth_state {
+        AuthState::AuthCode {
+            client_id,
+            redirect_url,
+            redirect_state,
+            code_challenge,
+        } => {
+            let auth_code = AuthCode::new();
+            let auth_code_hash = auth_code.hash();
 
-    Ok(Redirect::to("/code/done"))
+            let expires_at = (SystemTime::now() + AUTH_CODE_TTL)
+                .duration_since(UNIX_EPOCH)?
+                .as_secs() as i64;
+
+            state
+                .database
+                .create_auth_code(
+                    &auth_code_hash,
+                    &client_id,
+                    &redirect_url,
+                    &code_challenge,
+                    expires_at,
+                    user.id,
+                )
+                .await?;
+
+            Ok(Redirect::to(
+                Url::parse_with_params(
+                    &redirect_url,
+                    &[
+                        ("code", BASE64_URL_SAFE_NO_PAD.encode(auth_code.as_ref())),
+                        ("state", redirect_state),
+                    ],
+                )?
+                .as_str(),
+            ))
+        }
+        AuthState::DeviceAuth { device_code_hash } => {
+            state
+                .database
+                .set_device_code_user_id(&device_code_hash, user.id)
+                .await?;
+
+            Ok(Redirect::to("/code/done"))
+        }
+    }
+}
+
+async fn session_info(SessionGuard { user_id }: SessionGuard) -> Result<Json<Value>, AppError> {
+    Ok(Json(json!({
+        "user_id": user_id.to_string(),
+    })))
 }

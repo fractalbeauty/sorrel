@@ -17,6 +17,18 @@ CREATE TABLE IF NOT EXISTS keys (
   FOREIGN KEY (user_id) REFERENCES users (id)
 );
 
+CREATE TABLE IF NOT EXISTS auth_codes (
+  auth_code_hash BLOB PRIMARY KEY NOT NULL,
+  client_id TEXT NOT NULL,
+  redirect_uri TEXT NOT NULL,
+  code_challenge BLOB NOT NULL,
+  expires_at INTEGER NOT NULL,
+  user_id BLOB NOT NULL,
+  is_used BOOLEAN NOT NULL DEFAULT 0,
+  FOREIGN KEY (user_id) REFERENCES users (id)
+);
+
+-- TODO: split into uesr_codes and device_codes tables
 CREATE TABLE IF NOT EXISTS device_codes (
   device_code_hash BLOB PRIMARY KEY NOT NULL,
   user_code_hash BLOB NOT NULL,
@@ -25,5 +37,12 @@ CREATE TABLE IF NOT EXISTS device_codes (
   is_used BOOLEAN NOT NULL DEFAULT 0,
   device_name_hint TEXT,
   device_ip_hint TEXT,
+  FOREIGN KEY (user_id) REFERENCES users (id)
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash BLOB PRIMARY KEY NOT NULL,
+  last_used_at INTEGER NOT NULL,
+  user_id BLOB NOT NULL,
   FOREIGN KEY (user_id) REFERENCES users (id)
 );
