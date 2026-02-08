@@ -47,6 +47,7 @@ enum AuthState {
         redirect_url: String,
         redirect_state: String,
         code_challenge: Vec<u8>,
+        device_name: Option<String>,
     },
     /// State used in device authorization grant flow.
     /// Set after user enters user code and confirms login.
@@ -376,6 +377,7 @@ struct AuthorizeQuery {
     state: String,
     code_challenge: String,
     code_challenge_method: String,
+    device_name: Option<String>,
 }
 
 fn make_error_redirect(
@@ -453,6 +455,7 @@ async fn oauth_authorize(
                 redirect_url: query.redirect_uri,
                 redirect_state: query.state,
                 code_challenge,
+                device_name: query.device_name.clone(),
             },
         )
         .await?;
@@ -588,19 +591,24 @@ async fn oauth_token(
         ));
     }
 
-    let (session_id, plain_token) =
-        match session::create_session(&state.database, auth_code.user_id).await {
-            Ok(token) => token,
-            Err(e) => {
-                log::error!("failed to create session: {}", e);
-                return Ok((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({
-                        "error": "server_error",
-                    })),
-                ));
-            }
-        };
+    let (session_id, plain_token) = match session::create_session(
+        &state.database,
+        auth_code.user_id,
+        auth_code.device_name.as_deref(),
+    )
+    .await
+    {
+        Ok(token) => token,
+        Err(e) => {
+            log::error!("failed to create session: {}", e);
+            return Ok((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "server_error",
+                })),
+            ));
+        }
+    };
 
     Ok((
         StatusCode::OK,
@@ -829,7 +837,13 @@ async fn oauth_device_poll(
         .set_device_code_used(&device_code_hash)
         .await?;
 
-    let (session_id, plain_token) = match session::create_session(&state.database, user_id).await {
+    let (session_id, plain_token) = match session::create_session(
+        &state.database,
+        user_id,
+        device_code.device_name_hint.as_deref(),
+    )
+    .await
+    {
         Ok(token) => token,
         Err(e) => {
             log::error!("failed to create session: {}", e);
@@ -1028,6 +1042,7 @@ async fn oidc_callback(
             redirect_url,
             redirect_state,
             code_challenge,
+            device_name,
         } => {
             let auth_code = AuthCode::new();
             let auth_code_hash = auth_code.hash();
@@ -1045,6 +1060,7 @@ async fn oidc_callback(
                     &code_challenge,
                     expires_at,
                     user.id,
+                    device_name.as_deref(),
                 )
                 .await?;
 

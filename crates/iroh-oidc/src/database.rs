@@ -25,6 +25,7 @@ pub struct AuthCode {
     pub expires_at: i64,
     pub user_id: Uuid,
     pub is_used: bool,
+    pub device_name: Option<String>,
 }
 
 pub struct Session {
@@ -32,6 +33,7 @@ pub struct Session {
     pub token_hash: Vec<u8>,
     pub last_used_at: i64,
     pub user_id: Uuid,
+    pub device_name: Option<String>,
 }
 
 pub struct User {
@@ -77,18 +79,20 @@ impl Database {
         code_challenge: &[u8],
         expires_at: i64,
         user_id: Uuid,
+        device_name: Option<&str>,
     ) -> anyhow::Result<()> {
         sqlx::query!(
             r#"
-            INSERT INTO auth_codes (auth_code_hash, client_id, redirect_uri, code_challenge, expires_at, user_id)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO auth_codes (auth_code_hash, client_id, redirect_uri, code_challenge, expires_at, user_id, device_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             "#,
             auth_code_hash,
             client_id,
             redirect_uri,
             code_challenge,
             expires_at,
-            user_id
+            user_id,
+            device_name
         )
         .execute(&self.pool)
         .await?;
@@ -103,7 +107,7 @@ impl Database {
         let row = sqlx::query_as!(
             AuthCode,
             r#"
-            SELECT auth_code_hash, client_id, redirect_uri, code_challenge, expires_at, user_id as "user_id: Uuid", is_used
+            SELECT auth_code_hash, client_id, redirect_uri, code_challenge, expires_at, user_id as "user_id: Uuid", is_used, device_name
             FROM auth_codes
             WHERE auth_code_hash = ?
             "#,
@@ -279,18 +283,20 @@ impl Database {
         id: Uuid,
         token_hash: &[u8],
         user_id: Uuid,
+        device_name: Option<&str>,
     ) -> sqlx::Result<()> {
         let last_used_at = now();
 
         sqlx::query!(
             r#"
-            INSERT INTO sessions (id, token_hash, last_used_at, user_id)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO sessions (id, token_hash, last_used_at, user_id, device_name)
+            VALUES (?, ?, ?, ?, ?)
             "#,
             id,
             token_hash,
             last_used_at,
-            user_id
+            user_id,
+            device_name
         )
         .execute(&self.pool)
         .await?;
@@ -305,7 +311,7 @@ impl Database {
         let row = sqlx::query_as!(
             Session,
             r#"
-            SELECT id as "id: Uuid", token_hash, last_used_at, user_id as "user_id: Uuid"
+            SELECT id as "id: Uuid", token_hash, last_used_at, user_id as "user_id: Uuid", device_name
             FROM sessions
             WHERE token_hash = ?
             "#,
@@ -339,7 +345,7 @@ impl Database {
         let rows = sqlx::query_as!(
             Session,
             r#"
-            SELECT id as "id: Uuid", token_hash, last_used_at, user_id as "user_id: Uuid"
+            SELECT id as "id: Uuid", token_hash, last_used_at, user_id as "user_id: Uuid", device_name
             FROM sessions
             WHERE user_id = ?
             "#,
@@ -376,4 +382,39 @@ fn now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64
+}
+
+#[cfg(test)]
+mod test {
+    #[tokio::test]
+    async fn authenticate_same_subjects() {
+        let database = super::Database::open_memory().await.unwrap();
+
+        let user1 = database
+            .authenticate("test_provider", "test_subject")
+            .await
+            .unwrap();
+        let user2 = database
+            .authenticate("test_provider", "test_subject")
+            .await
+            .unwrap();
+
+        assert_eq!(user1.id, user2.id);
+    }
+
+    #[tokio::test]
+    async fn authenticate_different_subjects() {
+        let database = super::Database::open_memory().await.unwrap();
+
+        let user1 = database
+            .authenticate("test_provider", "test_subject1")
+            .await
+            .unwrap();
+        let user2 = database
+            .authenticate("test_provider", "test_subject2")
+            .await
+            .unwrap();
+
+        assert_ne!(user1.id, user2.id);
+    }
 }

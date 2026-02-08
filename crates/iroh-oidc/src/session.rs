@@ -35,11 +35,14 @@ pub enum CreateSessionFatalError {
 pub async fn create_session(
     database: &Database,
     user_id: Uuid,
+    device_name: Option<&str>,
 ) -> Result<(Uuid, String), CreateSessionFatalError> {
     let id = Uuid::new_v4();
     let (plain_token, hashed_token) = generate_token();
 
-    database.create_session(id, &hashed_token, user_id).await?;
+    database
+        .create_session(id, &hashed_token, user_id, device_name)
+        .await?;
 
     Ok((id, plain_token))
 }
@@ -52,6 +55,7 @@ pub enum ValidateSessionFatalError {
     InvalidLastUsed,
 }
 
+#[derive(Debug)]
 pub enum ValidateSessionLocalError {
     Expired,
     Invalid,
@@ -179,5 +183,30 @@ impl axum::extract::FromRequestParts<AppState> for SessionGuard {
         };
 
         Ok(SessionGuard { user_id })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::database::Database;
+
+    #[tokio::test]
+    async fn create_and_validate() {
+        let database = Database::open_memory().await.unwrap();
+
+        let user = database
+            .authenticate("test_provider", "test_subject")
+            .await
+            .unwrap();
+
+        let (_session_id, token) = super::create_session(&database, user.id, None)
+            .await
+            .unwrap();
+
+        let result = super::validate_session(&database, &token)
+            .await
+            .unwrap()
+            .expect("Session should be valid");
+        assert_eq!(result, user.id);
     }
 }

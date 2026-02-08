@@ -90,8 +90,8 @@ pub struct SessionListSuccess {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SessionListSession {
     pub id: Uuid,
-    // pub device_name: String,
     pub last_used_at: u64,
+    pub device_name: Option<String>,
 }
 
 pub(crate) async fn api_session_list(
@@ -129,8 +129,8 @@ async fn session_list(
         .into_iter()
         .map(|session| SessionListSession {
             id: session.id,
-            // device_name: session.device_name_hint.unwrap_or_else(|| "Unknown device".to_string()),
             last_used_at: session.last_used_at as u64,
+            device_name: session.device_name,
         })
         .collect();
 

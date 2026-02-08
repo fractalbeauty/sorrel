@@ -236,9 +236,10 @@ async fn auth_with_code(config: &Config) -> anyhow::Result<String> {
     let redirect_uri = format!("{}/callback", redirect_base_url);
 
     // Generate the authorization URL
+    let device_name = "iroh-keyserver-cli";
     let auth_url = format!(
-        "{}/api/oauth/authorize?client_id={}&response_type=code&redirect_uri={}&code_challenge={}&code_challenge_method=S256&state={}",
-        base_url, client_id, redirect_uri, code_challenge, csrf_token
+        "{}/api/oauth/authorize?client_id={}&response_type=code&redirect_uri={}&code_challenge={}&code_challenge_method=S256&state={}&device_name={}",
+        base_url, client_id, redirect_uri, code_challenge, csrf_token, device_name
     );
 
     if config.open {
