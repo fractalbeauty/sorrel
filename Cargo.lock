@@ -1378,6 +1378,7 @@ dependencies = [
  "clap",
  "env_logger",
  "figment",
+ "hex",
  "iroh-oidc",
  "log",
  "rand 0.8.5",

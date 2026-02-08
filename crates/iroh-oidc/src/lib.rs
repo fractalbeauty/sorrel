@@ -183,6 +183,8 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/api/sessions/info", get(api::api_session_info))
         .route("/api/sessions/list", get(api::api_session_list))
         .route("/api/sessions/revoke", post(api::api_session_revoke))
+        .route("/api/keys", get(api::api_list_keys))
+        .route("/api/keys", post(api::api_set_key))
         .route("/oidc/redirect/{provider_id}", get(oidc_redirect))
         .route("/oidc/callback/{provider_id}", get(oidc_callback))
         .layer(session_layer)
@@ -591,14 +593,14 @@ async fn oauth_token(
         ));
     }
 
-    let (session_id, plain_token) = match session::create_session(
+    let create_success = match session::create_session(
         &state.database,
         auth_code.user_id,
         auth_code.device_name.as_deref(),
     )
     .await
     {
-        Ok(token) => token,
+        Ok(create_success) => create_success,
         Err(e) => {
             log::error!("failed to create session: {}", e);
             return Ok((
@@ -613,7 +615,7 @@ async fn oauth_token(
     Ok((
         StatusCode::OK,
         Json(json!({
-            "access_token": plain_token,
+            "access_token": create_success.plain_token,
             "token_type": "Bearer",
         })),
     ))
@@ -837,14 +839,14 @@ async fn oauth_device_poll(
         .set_device_code_used(&device_code_hash)
         .await?;
 
-    let (session_id, plain_token) = match session::create_session(
+    let create_success = match session::create_session(
         &state.database,
         user_id,
         device_code.device_name_hint.as_deref(),
     )
     .await
     {
-        Ok(token) => token,
+        Ok(create_success) => create_success,
         Err(e) => {
             log::error!("failed to create session: {}", e);
             return Ok(Json(DevicePollResponse::Error {
@@ -854,7 +856,7 @@ async fn oauth_device_poll(
     };
 
     Ok(Json(DevicePollResponse::Success {
-        access_token: plain_token,
+        access_token: create_success.plain_token,
     }))
 }
 

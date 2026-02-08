@@ -44,3 +44,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   UNIQUE (token_hash),
   FOREIGN KEY (user_id) REFERENCES users (id)
 );
+
+CREATE TABLE IF NOT EXISTS keys (
+  public_key BLOB PRIMARY KEY NOT NULL,
+  app TEXT NOT NULL,
+  session_id BLOB NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES sessions (id)
+);

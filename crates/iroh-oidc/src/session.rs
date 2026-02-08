@@ -25,6 +25,11 @@ fn hash_token(token: [u8; 32]) -> [u8; 32] {
     Sha256::digest(token).into()
 }
 
+pub struct CreateSessionSuccess {
+    pub session_id: Uuid,
+    pub plain_token: String,
+}
+
 #[derive(Debug, Snafu)]
 pub enum CreateSessionFatalError {
     #[snafu(transparent)]
@@ -36,7 +41,7 @@ pub async fn create_session(
     database: &Database,
     user_id: Uuid,
     device_name: Option<&str>,
-) -> Result<(Uuid, String), CreateSessionFatalError> {
+) -> Result<CreateSessionSuccess, CreateSessionFatalError> {
     let id = Uuid::new_v4();
     let (plain_token, hashed_token) = generate_token();
 
@@ -44,7 +49,15 @@ pub async fn create_session(
         .create_session(id, &hashed_token, user_id, device_name)
         .await?;
 
-    Ok((id, plain_token))
+    Ok(CreateSessionSuccess {
+        session_id: id,
+        plain_token,
+    })
+}
+
+pub struct ValidateSessionSuccess {
+    pub session_id: Uuid,
+    pub user_id: Uuid,
 }
 
 #[derive(Debug, Snafu)]
@@ -65,7 +78,7 @@ pub enum ValidateSessionLocalError {
 pub async fn validate_session(
     database: &Database,
     token: &str,
-) -> Result<Result<Uuid, ValidateSessionLocalError>, ValidateSessionFatalError> {
+) -> Result<Result<ValidateSessionSuccess, ValidateSessionLocalError>, ValidateSessionFatalError> {
     let token = match URL_SAFE_NO_PAD.decode(token) {
         Ok(bytes) => bytes,
         Err(_) => return Ok(Err(ValidateSessionLocalError::Invalid)),
@@ -93,11 +106,15 @@ pub async fn validate_session(
 
     database.update_session_last_used(&hashed_token).await?;
 
-    Ok(Ok(session.user_id))
+    Ok(Ok(ValidateSessionSuccess {
+        session_id: session.id,
+        user_id: session.user_id,
+    }))
 }
 
 /// Axum extractor that handles auth
 pub struct SessionGuard {
+    pub session_id: Uuid,
     pub user_id: Uuid,
 }
 
@@ -168,8 +185,8 @@ impl axum::extract::FromRequestParts<AppState> for SessionGuard {
             }
         };
 
-        let user_id = match validate_session(&state.database, token).await {
-            Ok(Ok(user_id)) => user_id,
+        let validate_success = match validate_session(&state.database, token).await {
+            Ok(Ok(validate_success)) => validate_success,
             Ok(Err(ValidateSessionLocalError::Expired)) => {
                 return Err(AuthError::unauthorized());
             }
@@ -182,7 +199,10 @@ impl axum::extract::FromRequestParts<AppState> for SessionGuard {
             }
         };
 
-        Ok(SessionGuard { user_id })
+        Ok(SessionGuard {
+            session_id: validate_success.session_id,
+            user_id: validate_success.user_id,
+        })
     }
 }
 
@@ -199,14 +219,16 @@ mod test {
             .await
             .unwrap();
 
-        let (_session_id, token) = super::create_session(&database, user.id, None)
+        let create_success = super::create_session(&database, user.id, None)
             .await
             .unwrap();
 
-        let result = super::validate_session(&database, &token)
+        let validate_success = super::validate_session(&database, &create_success.plain_token)
             .await
             .unwrap()
             .expect("Session should be valid");
-        assert_eq!(result, user.id);
+
+        assert_eq!(validate_success.session_id, create_success.session_id);
+        assert_eq!(validate_success.user_id, user.id);
     }
 }

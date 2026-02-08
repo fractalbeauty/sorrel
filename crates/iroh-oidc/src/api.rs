@@ -11,7 +11,9 @@ use axum::{
 };
 use monostate::MustBe;
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use snafu::Snafu;
+use std::convert::Infallible;
 use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -32,24 +34,31 @@ impl IntoResponse for SessionInfoResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SessionInfoSuccess {
+    pub session_id: Uuid,
     pub user_id: Uuid,
 }
 
 pub(crate) async fn api_session_info(
     session: Result<SessionGuard, AuthError>,
 ) -> SessionInfoResponse {
-    let SessionGuard { user_id } = match session {
+    let SessionGuard {
+        session_id,
+        user_id,
+    } = match session {
         Ok(session_guard) => session_guard,
         Err(auth_error) => return SessionInfoResponse::AuthError(auth_error),
     };
 
-    let response = session_info(user_id).await;
+    let response = session_info(session_id, user_id).await;
 
     SessionInfoResponse::Success(response)
 }
 
-async fn session_info(user_id: Uuid) -> SessionInfoSuccess {
-    SessionInfoSuccess { user_id }
+async fn session_info(session_id: Uuid, user_id: Uuid) -> SessionInfoSuccess {
+    SessionInfoSuccess {
+        session_id,
+        user_id,
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -98,7 +107,7 @@ pub(crate) async fn api_session_list(
     State(state): State<AppState>,
     session: Result<SessionGuard, AuthError>,
 ) -> SessionListResponse {
-    let SessionGuard { user_id } = match session {
+    let SessionGuard { user_id, .. } = match session {
         Ok(session_guard) => session_guard,
         Err(auth_error) => return SessionListResponse::AuthError(auth_error),
     };
@@ -211,7 +220,7 @@ pub(crate) async fn api_session_revoke(
     session: Result<SessionGuard, AuthError>,
     request: Result<Json<SessionRevokeRequest>, JsonRejection>,
 ) -> SessionRevokeResponse {
-    let SessionGuard { user_id } = match session {
+    let SessionGuard { user_id, .. } = match session {
         Ok(session_guard) => session_guard,
         Err(auth_error) => return SessionRevokeResponse::AuthError(auth_error),
     };
@@ -257,4 +266,207 @@ async fn session_revoke(
     }
 
     Ok(Ok(()))
+}
+
+#[serde_as]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetKeyRequest {
+    pub app: String,
+    #[serde_as(as = "serde_with::hex::Hex")]
+    pub public_key: [u8; 32],
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SetKeyResponse {
+    Success {
+        success: MustBe!(true),
+    },
+    AuthError(AuthError),
+    InvalidRequest {
+        error: MustBe!("invalid_request"),
+        error_description: String,
+    },
+    InternalServerError {
+        error: MustBe!("internal_server_error"),
+    },
+}
+
+impl SetKeyResponse {
+    fn success() -> Self {
+        SetKeyResponse::Success {
+            success: MustBe!(true),
+        }
+    }
+}
+
+impl From<JsonRejection> for SetKeyResponse {
+    fn from(rejection: JsonRejection) -> Self {
+        SetKeyResponse::InvalidRequest {
+            error: MustBe!("invalid_request"),
+            error_description: rejection.to_string(),
+        }
+    }
+}
+
+impl IntoResponse for SetKeyResponse {
+    fn into_response(self) -> Response {
+        match self {
+            SetKeyResponse::Success { .. } => Json(self).into_response(),
+            SetKeyResponse::AuthError(auth_error) => auth_error.into_response(),
+            SetKeyResponse::InvalidRequest { .. } => {
+                (StatusCode::BAD_REQUEST, Json(self)).into_response()
+            }
+            SetKeyResponse::InternalServerError { .. } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(self)).into_response()
+            }
+        }
+    }
+}
+
+pub(crate) async fn api_set_key(
+    State(state): State<AppState>,
+    session: Result<SessionGuard, AuthError>,
+    request: Result<Json<SetKeyRequest>, JsonRejection>,
+) -> SetKeyResponse {
+    let SessionGuard { session_id, .. } = match session {
+        Ok(session_guard) => session_guard,
+        Err(auth_error) => return SetKeyResponse::AuthError(auth_error),
+    };
+
+    let request = match request {
+        Ok(request) => request,
+        Err(json_error) => return SetKeyResponse::from(json_error),
+    };
+
+    match set_key(
+        &state.database,
+        session_id,
+        &request.app,
+        &request.public_key,
+    )
+    .await
+    {
+        Ok(Ok(())) => SetKeyResponse::success(),
+
+        Err(e) => {
+            log::error!("Failed to set key: {:?}", e);
+            SetKeyResponse::InternalServerError {
+                error: MustBe!("internal_server_error"),
+            }
+        }
+    }
+}
+
+#[derive(Debug, Snafu)]
+enum SetKeyFatalError {
+    #[snafu(transparent)]
+    Database { source: sqlx::Error },
+}
+
+async fn set_key(
+    database: &Database,
+    session_id: Uuid,
+    app: &str,
+    public_key: &[u8; 32],
+) -> Result<Result<(), Infallible>, SetKeyFatalError> {
+    database
+        .set_key_for_session(session_id, app, public_key)
+        .await?;
+
+    Ok(Ok(()))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ListKeysResponse {
+    Success(ListKeysSuccess),
+    AuthError(AuthError),
+    InternalServerError {
+        error: MustBe!("internal_server_error"),
+    },
+}
+
+impl IntoResponse for ListKeysResponse {
+    fn into_response(self) -> Response {
+        match self {
+            ListKeysResponse::Success(success) => Json(success).into_response(),
+            ListKeysResponse::AuthError(auth_error) => auth_error.into_response(),
+            ListKeysResponse::InternalServerError { .. } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(self)).into_response()
+            }
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListKeysSuccess {
+    pub keys: Vec<ListKeysResponseItem>,
+}
+
+#[serde_as]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListKeysResponseItem {
+    #[serde_as(as = "serde_with::hex::Hex")]
+    pub public_key: [u8; 32],
+    pub app: String,
+    pub session_id: Uuid,
+    pub session_last_used_at: u64,
+    pub session_device_name: Option<String>,
+}
+
+pub(crate) async fn api_list_keys(
+    State(state): State<AppState>,
+    session: Result<SessionGuard, AuthError>,
+) -> ListKeysResponse {
+    let SessionGuard { user_id, .. } = match session {
+        Ok(session_guard) => session_guard,
+        Err(auth_error) => return ListKeysResponse::AuthError(auth_error),
+    };
+
+    match list_keys(&state.database, user_id).await {
+        Ok(Ok(success)) => ListKeysResponse::Success(success),
+
+        Err(e) => {
+            log::error!("Failed to list keys: {:?}", e);
+            ListKeysResponse::InternalServerError {
+                error: MustBe!("internal_server_error"),
+            }
+        }
+    }
+}
+
+#[derive(Debug, Snafu)]
+enum ListKeysFatalError {
+    #[snafu(transparent)]
+    Database { source: sqlx::Error },
+    #[snafu(display("Stored public key is invalid"))]
+    InvalidPublicKey,
+}
+
+async fn list_keys(
+    database: &Database,
+    user_id: Uuid,
+) -> Result<Result<ListKeysSuccess, Infallible>, ListKeysFatalError> {
+    let keys = database.get_keys_by_user_id(user_id).await?;
+
+    let keys = keys
+        .into_iter()
+        .map(|key| {
+            let public_key = key
+                .public_key
+                .try_into()
+                .map_err(|_| ListKeysFatalError::InvalidPublicKey)?;
+
+            Ok(ListKeysResponseItem {
+                public_key,
+                app: key.app,
+                session_id: key.session_id,
+                session_last_used_at: key.session_last_used_at as u64,
+                session_device_name: key.session_device_name,
+            })
+        })
+        .collect::<Result<Vec<ListKeysResponseItem>, ListKeysFatalError>>()?;
+
+    Ok(Ok(ListKeysSuccess { keys }))
 }

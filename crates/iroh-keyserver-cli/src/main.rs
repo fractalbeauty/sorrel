@@ -30,7 +30,7 @@ struct Cli {
     config: Config,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Command,
 }
 
 #[derive(Serialize, Deserialize, Args)]
@@ -65,19 +65,31 @@ struct Config {
 }
 
 #[derive(Subcommand)]
-enum Commands {
+enum Command {
     /// Authenticate
     Auth,
     /// List sessions
     ListSessions,
     /// Revoke a session
     RevokeSession(RevokeSessionArgs),
+    /// List keys
+    ListKeys,
+    /// Set key for an application
+    SetKey(SetKeyArgs),
 }
 
 #[derive(Args)]
 struct RevokeSessionArgs {
     /// ID of the session to revoke
     session_id: Uuid,
+}
+
+#[derive(Args)]
+struct SetKeyArgs {
+    /// Application name to set the key for
+    app: String,
+    /// Public key (hex)
+    public_key: String,
 }
 
 const ENV_PREFIX: &str = "APP_";
@@ -105,7 +117,7 @@ async fn main() -> anyhow::Result<()> {
         .trim_end_matches('/');
 
     match command {
-        Commands::Auth => {
+        Command::Auth => {
             let token = auth(&config).await?;
 
             let response = Client::new()
@@ -125,7 +137,7 @@ async fn main() -> anyhow::Result<()> {
 
             log::info!("Session info: {:?}", session_info);
         }
-        Commands::ListSessions => {
+        Command::ListSessions => {
             let token = auth(&config).await?;
 
             let response = Client::new()
@@ -145,7 +157,7 @@ async fn main() -> anyhow::Result<()> {
 
             log::info!("Session list response: {:?}", response);
         }
-        Commands::RevokeSession(RevokeSessionArgs { session_id }) => {
+        Command::RevokeSession(RevokeSessionArgs { session_id }) => {
             let token = auth(&config).await?;
 
             let response = Client::new()
@@ -165,6 +177,63 @@ async fn main() -> anyhow::Result<()> {
                 .context("Failed to parse session revoke response")?;
 
             log::info!("Session revoke response: {:?}", response);
+        }
+        Command::ListKeys => {
+            let token = auth(&config).await?;
+
+            let response = Client::new()
+                .get(format!("{base_url}/api/keys"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .context("Failed to send request to list keys endpoint")?
+                .json::<Value>()
+                .await
+                .context("Failed to get list keys response")?;
+
+            log::info!("List keys raw response: {:?}", response);
+
+            let response: iroh_oidc::api::ListKeysResponse =
+                serde_json::from_value(response).context("Failed to parse list keys response")?;
+
+            log::info!("List keys response: {:?}", response);
+        }
+        Command::SetKey(SetKeyArgs { app, public_key }) => {
+            let token = auth(&config).await?;
+
+            let public_key = match hex::decode(public_key) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    log::error!("Failed to decode public key: {:?}", e);
+                    return Err(anyhow::anyhow!("Invalid public key"));
+                }
+            };
+
+            if public_key.len() != 32 {
+                log::error!("Public key must be 32 bytes, got {}", public_key.len());
+                return Err(anyhow::anyhow!("Invalid public key length"));
+            }
+
+            let response = Client::new()
+                .post(format!("{base_url}/api/keys"))
+                .bearer_auth(&token)
+                .json(&iroh_oidc::api::SetKeyRequest {
+                    app,
+                    public_key: public_key.try_into().unwrap(),
+                })
+                .send()
+                .await
+                .context("Failed to send request to set key endpoint")?
+                .json::<Value>()
+                .await
+                .context("Failed to get set key response")?;
+
+            log::info!("Set key raw response: {:?}", response);
+
+            let response: iroh_oidc::api::SetKeyResponse =
+                serde_json::from_value(response).context("Failed to parse set key response")?;
+
+            log::info!("Set key response: {:?}", response);
         }
     }
 

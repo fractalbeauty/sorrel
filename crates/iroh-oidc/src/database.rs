@@ -36,6 +36,14 @@ pub struct Session {
     pub device_name: Option<String>,
 }
 
+pub struct Key {
+    pub public_key: Vec<u8>,
+    pub app: String,
+    pub session_id: Uuid,
+    pub session_last_used_at: i64,
+    pub session_device_name: Option<String>,
+}
+
 pub struct User {
     pub id: Uuid,
 }
@@ -375,6 +383,59 @@ impl Database {
 
         Ok(res.rows_affected() > 0)
     }
+
+    pub async fn set_key_for_session(
+        &self,
+        session_id: Uuid,
+        app: &str,
+        public_key: &[u8],
+    ) -> sqlx::Result<()> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query!(
+            r#"
+            DELETE FROM keys
+            WHERE session_id = ? AND app = ?
+            "#,
+            session_id,
+            app
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query!(
+            r#"
+            INSERT INTO keys (session_id, app, public_key)
+            VALUES (?, ?, ?)
+            "#,
+            session_id,
+            app,
+            public_key
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(())
+    }
+
+    pub async fn get_keys_by_user_id(&self, user_id: Uuid) -> sqlx::Result<Vec<Key>> {
+        let rows = sqlx::query_as!(
+            Key,
+            r#"
+            SELECT k.public_key, k.app, s.id as "session_id: Uuid", s.last_used_at as "session_last_used_at: i64", s.device_name as "session_device_name: String"
+            FROM keys k
+            JOIN sessions s ON k.session_id = s.id
+            WHERE s.user_id = ?
+            "#,
+            user_id
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
 }
 
 fn now() -> i64 {
@@ -386,6 +447,8 @@ fn now() -> i64 {
 
 #[cfg(test)]
 mod test {
+    use uuid::Uuid;
+
     #[tokio::test]
     async fn authenticate_same_subjects() {
         let database = super::Database::open_memory().await.unwrap();
@@ -416,5 +479,33 @@ mod test {
             .unwrap();
 
         assert_ne!(user1.id, user2.id);
+    }
+
+    #[tokio::test]
+    async fn create_and_get_keys() {
+        let database = super::Database::open_memory().await.unwrap();
+
+        let user = database
+            .authenticate("test_provider", "test_subject")
+            .await
+            .unwrap();
+
+        let session_id = Uuid::new_v4();
+        database
+            .create_session(session_id, b"test_token_hash", user.id, Some("test_device"))
+            .await
+            .unwrap();
+
+        database
+            .set_key_for_session(session_id, "test_app", b"test_public_key")
+            .await
+            .unwrap();
+
+        let keys = database.get_keys_by_user_id(user.id).await.unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].public_key, b"test_public_key");
+        assert_eq!(keys[0].app, "test_app");
+        assert_eq!(keys[0].session_id, session_id);
+        assert_eq!(keys[0].session_device_name.as_deref(), Some("test_device"));
     }
 }
