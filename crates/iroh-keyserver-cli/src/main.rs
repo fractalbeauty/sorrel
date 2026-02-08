@@ -4,19 +4,53 @@ use axum::response::Html;
 use axum::{Router, routing::get};
 use base64::Engine;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
+use figment::Figment;
+use figment::providers::{Env, Serialized};
 use rand::{Rng, distributions::Alphanumeric};
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
+
+#[derive(Serialize, Deserialize, Args)]
+struct Config {
+    /// Open the browser automatically
+    #[clap(long, default_value_t = true, default_missing_value = "true", num_args = 0..=1)]
+    open: bool,
+
+    /// Session token to use
+    #[clap(long)]
+    token: Option<String>,
+
+    /// Base URL of the API to use (default: http://localhost:3000)
+    #[clap(long)]
+    base_url: Option<String>,
+
+    /// Client ID to use for authentication (default: iroh-keyserver-cli)
+    #[clap(long)]
+    client_id: Option<String>,
+
+    /// Address to listen on for the local server for authentication (default: 127.0.0.1)
+    #[clap(long)]
+    listen_address: Option<String>,
+
+    /// Port to listen on for the local server for authentication (default: 8080)
+    #[clap(long)]
+    listen_port: Option<u16>,
+}
 
 #[derive(Parser)]
 #[command(name = "iroh-keyserver-cli")]
 #[command(about = "CLI for iroh-keyserver", long_about = None)]
 struct Cli {
+    #[command(flatten)]
+    config: Config,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -29,15 +63,27 @@ enum Commands {
     List,
 }
 
+const ENV_PREFIX: &str = "APP_";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp(None)
+        .init();
 
-    let cli = Cli::parse();
+    let Cli {
+        config: cli_config,
+        command,
+    } = Cli::parse();
 
-    match cli.command {
+    let config = Figment::new()
+        .merge(Serialized::defaults(cli_config))
+        .merge(Env::prefixed(ENV_PREFIX))
+        .extract::<Config>()?;
+
+    match command {
         Commands::Auth => {
-            let token = auth_with_code(true).await?;
+            let token = auth(&config).await?;
 
             let session_info = Client::new()
                 .get("http://localhost:3000/api/session/info")
@@ -49,10 +95,7 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .context("Failed to parse session info response")?;
 
-            println!(
-                "Authenticated successfully. Session info: {:?}",
-                session_info
-            );
+            log::info!("Session info: {:?}", session_info);
         }
         Commands::List => {
             println!("List command executed");
@@ -62,7 +105,50 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn auth_with_code(open: bool) -> anyhow::Result<String> {
+async fn auth(config: &Config) -> anyhow::Result<Cow<'_, str>> {
+    match &config.token {
+        Some(token) => {
+            log::info!("Using provided token");
+
+            Ok(token.into())
+        }
+        None => {
+            log::info!("No token provided, starting authentication flow");
+
+            let token = auth_with_code(config).await?;
+
+            log::info!(
+                "To reuse authentication, use:\n\n--token {token}\n\nor\n\nexport {ENV_PREFIX}TOKEN={token}"
+            );
+
+            Ok(token.into())
+        }
+    }
+}
+
+async fn auth_with_code(config: &Config) -> anyhow::Result<String> {
+    let base_url = config
+        .base_url
+        .as_deref()
+        .unwrap_or("http://localhost:3000")
+        .trim_end_matches('/')
+        .to_owned();
+
+    let client_id = config
+        .client_id
+        .as_deref()
+        .unwrap_or("iroh-keyserver-cli")
+        .to_owned();
+
+    let listen_address = config
+        .listen_address
+        .as_deref()
+        .unwrap_or("127.0.0.1")
+        .parse::<IpAddr>()
+        .context("Invalid listen address")?;
+
+    let listen_port = config.listen_port.unwrap_or(8080);
+
     // Generate PKCE code verifier and challenge
     let code_verifier: [u8; 32] = rand::random::<[u8; 32]>();
     let code_challenge = BASE64_URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier));
@@ -74,22 +160,19 @@ async fn auth_with_code(open: bool) -> anyhow::Result<String> {
         .map(char::from)
         .collect();
 
-    let bind_port = 8080;
-    let redirect_uri = format!("http://localhost:{}/callback", bind_port);
+    let redirect_uri = format!("http://{}:{}/callback", listen_address, listen_port);
 
     // Generate the authorization URL
-    let base_url = "http://localhost:3000";
-    let client_id = "iroh-keyserver-cli";
     let auth_url = format!(
-        "{}/api/oauth/authorize?client_id=iroh-keyserver-cli&response_type=code&redirect_uri={}&code_challenge={}&code_challenge_method=S256&state={}",
-        base_url, redirect_uri, code_challenge, csrf_token
+        "{}/api/oauth/authorize?client_id={}&response_type=code&redirect_uri={}&code_challenge={}&code_challenge_method=S256&state={}",
+        base_url, client_id, redirect_uri, code_challenge, csrf_token
     );
 
-    if open {
-        println!("Opening {}", auth_url);
+    if config.open {
+        log::info!("Opening {}", auth_url);
         let _ = webbrowser::open(&auth_url);
     } else {
-        println!("To authenticate, open {}", auth_url);
+        log::info!("To authenticate, open {}", auth_url);
     }
 
     // Channel to signal shutdown
@@ -125,7 +208,7 @@ async fn auth_with_code(open: bool) -> anyhow::Result<String> {
                     // Exchange the code for a token
                     let client = Client::new();
                     let req = HashMap::from([
-                        ("client_id", client_id),
+                        ("client_id", &*client_id),
                         ("code", code),
                         ("grant_type", "authorization_code"),
                         ("redirect_uri", &redirect_uri),
@@ -175,7 +258,7 @@ async fn auth_with_code(open: bool) -> anyhow::Result<String> {
     );
 
     // Start the Axum server
-    let addr = SocketAddr::from(([127, 0, 0, 1], bind_port));
+    let addr = SocketAddr::from((listen_address, listen_port));
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
