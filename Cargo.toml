@@ -3,5 +3,6 @@ resolver = "3"
 members = [
     "crates/sorrel-api",
     "crates/sorrel-cli",
+    "crates/sorrel-client",
     "crates/sorrel-server"
 ]

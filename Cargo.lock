@@ -2235,7 +2235,6 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
- "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -2702,9 +2701,7 @@ dependencies = [
  "axum",
  "monostate",
  "serde",
- "serde_json",
  "serde_with",
- "snafu",
  "uuid",
 ]
 
@@ -2723,13 +2720,23 @@ dependencies = [
  "rand 0.8.5",
  "reqwest 0.13.2",
  "serde",
- "serde_json",
  "sha2",
- "sorrel-api",
+ "sorrel-client",
  "tokio",
  "url",
  "uuid",
  "webbrowser",
+]
+
+[[package]]
+name = "sorrel-client"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.13.2",
+ "snafu",
+ "sorrel-api",
+ "url",
+ "uuid",
 ]
 
 [[package]]

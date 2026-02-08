@@ -8,18 +8,16 @@ use clap::{Args, Parser, Subcommand};
 use figment::Figment;
 use figment::providers::{Env, Serialized};
 use rand::{Rng, distributions::Alphanumeric};
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sorrel_api::sessions::{
-    SessionInfoResponse, SessionListResponse, SessionRevokeRequest, SessionRevokeResponse,
-};
+use sorrel_client::Client;
+use sorrel_client::api::keys::SetKeyRequest;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
+use url::Url;
 use uuid::Uuid;
 
 #[derive(Parser)]
@@ -45,7 +43,7 @@ struct Config {
 
     /// Base URL of the API to use (default: http://localhost:3000)
     #[clap(long)]
-    base_url: Option<String>,
+    base_url: Option<Url>,
 
     /// Client ID to use for authentication (default: sorrel-cli)
     #[clap(long)]
@@ -112,91 +110,45 @@ async fn main() -> anyhow::Result<()> {
 
     let base_url = config
         .base_url
-        .as_deref()
-        .unwrap_or("http://localhost:3000")
-        .trim_end_matches('/');
+        .clone()
+        .unwrap_or_else(|| Url::parse("http://localhost:3000").unwrap());
 
     match command {
         Command::Auth => {
             let token = auth(&config).await?;
 
-            let response = Client::new()
-                .get(format!("{base_url}/api/sessions/info"))
-                .bearer_auth(&token)
-                .send()
-                .await
-                .context("Failed to send request to session info endpoint")?
-                .json::<Value>()
-                .await
-                .context("Failed to get session info response")?;
+            let client =
+                Client::new(base_url, token.to_string()).context("Failed to create API client")?;
 
-            log::info!("Session info raw response: {:?}", response);
-
-            let session_info: SessionInfoResponse = serde_json::from_value(response)
-                .context("Failed to parse session info response")?;
-
+            let session_info = client.session_info().await?;
             log::info!("Session info: {:?}", session_info);
         }
         Command::ListSessions => {
             let token = auth(&config).await?;
 
-            let response = Client::new()
-                .get(format!("{base_url}/api/sessions/list"))
-                .bearer_auth(&token)
-                .send()
-                .await
-                .context("Failed to send request to session list endpoint")?
-                .json::<Value>()
-                .await
-                .context("Failed to get session list response")?;
+            let client =
+                Client::new(base_url, token.to_string()).context("Failed to create API client")?;
 
-            log::info!("Session list raw response: {:?}", response);
-
-            let response: SessionListResponse = serde_json::from_value(response)
-                .context("Failed to parse session list response")?;
-
-            log::info!("Session list response: {:?}", response);
+            let session_list = client.list_sessions().await?;
+            log::info!("Session list: {:?}", session_list);
         }
         Command::RevokeSession(RevokeSessionArgs { session_id }) => {
             let token = auth(&config).await?;
 
-            let response = Client::new()
-                .post(format!("{base_url}/api/sessions/revoke"))
-                .bearer_auth(&token)
-                .json(&SessionRevokeRequest { session_id })
-                .send()
-                .await
-                .context("Failed to send request to session revoke endpoint")?
-                .json::<Value>()
-                .await
-                .context("Failed to get session revoke response")?;
+            let client =
+                Client::new(base_url, token.to_string()).context("Failed to create API client")?;
 
-            log::info!("Session revoke raw response: {:?}", response);
-
-            let response: SessionRevokeResponse = serde_json::from_value(response)
-                .context("Failed to parse session revoke response")?;
-
-            log::info!("Session revoke response: {:?}", response);
+            let session_revoke = client.revoke_session(session_id).await?;
+            log::info!("Revoke session: {:?}", session_revoke);
         }
         Command::ListKeys => {
             let token = auth(&config).await?;
 
-            let response = Client::new()
-                .get(format!("{base_url}/api/keys"))
-                .bearer_auth(&token)
-                .send()
-                .await
-                .context("Failed to send request to list keys endpoint")?
-                .json::<Value>()
-                .await
-                .context("Failed to get list keys response")?;
+            let client =
+                Client::new(base_url, token.to_string()).context("Failed to create API client")?;
 
-            log::info!("List keys raw response: {:?}", response);
-
-            let response: sorrel_api::keys::ListKeysResponse =
-                serde_json::from_value(response).context("Failed to parse list keys response")?;
-
-            log::info!("List keys response: {:?}", response);
+            let list_keys = client.list_keys().await?;
+            log::info!("List keys: {:?}", list_keys);
         }
         Command::SetKey(SetKeyArgs { app, public_key }) => {
             let token = auth(&config).await?;
@@ -209,31 +161,19 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
 
-            if public_key.len() != 32 {
-                log::error!("Public key must be 32 bytes, got {}", public_key.len());
-                return Err(anyhow::anyhow!("Invalid public key length"));
-            }
+            let public_key: [u8; 32] = match public_key.try_into() {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    log::error!("Invalid public key length: {:?}", e);
+                    return Err(anyhow::anyhow!("Invalid public key length"));
+                }
+            };
 
-            let response = Client::new()
-                .post(format!("{base_url}/api/keys"))
-                .bearer_auth(&token)
-                .json(&sorrel_api::keys::SetKeyRequest {
-                    app,
-                    public_key: public_key.try_into().unwrap(),
-                })
-                .send()
-                .await
-                .context("Failed to send request to set key endpoint")?
-                .json::<Value>()
-                .await
-                .context("Failed to get set key response")?;
+            let client = Client::new(base_url.clone(), token.to_string())
+                .context("Failed to create API client")?;
 
-            log::info!("Set key raw response: {:?}", response);
-
-            let response: sorrel_api::keys::SetKeyResponse =
-                serde_json::from_value(response).context("Failed to parse set key response")?;
-
-            log::info!("Set key response: {:?}", response);
+            let set_key = client.set_key(SetKeyRequest { app, public_key }).await?;
+            log::info!("Set key: {:?}", set_key);
         }
     }
 
@@ -264,10 +204,8 @@ async fn auth(config: &Config) -> anyhow::Result<Cow<'_, str>> {
 async fn auth_with_code(config: &Config) -> anyhow::Result<String> {
     let base_url = config
         .base_url
-        .as_deref()
-        .unwrap_or("http://localhost:3000")
-        .trim_end_matches('/')
-        .to_owned();
+        .clone()
+        .unwrap_or_else(|| Url::parse("http://localhost:3000").unwrap());
 
     let client_id = config
         .client_id
@@ -349,7 +287,7 @@ async fn auth_with_code(config: &Config) -> anyhow::Result<String> {
                     let code_verifier = BASE64_URL_SAFE_NO_PAD.encode(code_verifier);
 
                     // Exchange the code for a token
-                    let client = Client::new();
+                    let client = reqwest::Client::new();
                     let req = HashMap::from([
                         ("client_id", &*client_id),
                         ("code", code),
