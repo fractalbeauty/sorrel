@@ -37,12 +37,15 @@ CREATE TABLE IF NOT EXISTS device_codes (
   is_used BOOLEAN NOT NULL DEFAULT 0,
   device_name_hint TEXT,
   device_ip_hint TEXT,
+  UNIQUE (user_code_hash),
   FOREIGN KEY (user_id) REFERENCES users (id)
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
-  token_hash BLOB PRIMARY KEY NOT NULL,
+  id BLOB PRIMARY KEY NOT NULL,
+  token_hash BLOB NOT NULL,
   last_used_at INTEGER NOT NULL,
   user_id BLOB NOT NULL,
+  UNIQUE (token_hash),
   FOREIGN KEY (user_id) REFERENCES users (id)
 );

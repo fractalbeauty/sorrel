@@ -1378,10 +1378,12 @@ dependencies = [
  "clap",
  "env_logger",
  "figment",
+ "iroh-oidc",
  "log",
  "rand 0.8.5",
  "reqwest 0.13.2",
  "serde",
+ "serde_json",
  "sha2",
  "tokio",
  "url",
@@ -3442,6 +3444,7 @@ checksum = "ee48d38b119b0cd71fe4141b30f5ba9c7c5d9f4e7a3a8b4a674e4b6ef789976f"
 dependencies = [
  "getrandom 0.3.4",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 

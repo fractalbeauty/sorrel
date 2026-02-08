@@ -7,15 +7,28 @@ use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use clap::{Args, Parser, Subcommand};
 use figment::Figment;
 use figment::providers::{Env, Serialized};
+use iroh_oidc::api::SessionListResponse;
 use rand::{Rng, distributions::Alphanumeric};
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
+
+#[derive(Parser)]
+#[command(name = "iroh-keyserver-cli")]
+#[command(about = "CLI for iroh-keyserver", long_about = None)]
+struct Cli {
+    #[command(flatten)]
+    config: Config,
+
+    #[command(subcommand)]
+    command: Commands,
+}
 
 #[derive(Serialize, Deserialize, Args)]
 struct Config {
@@ -42,25 +55,26 @@ struct Config {
     /// Port to listen on for the local server for authentication (default: 8080)
     #[clap(long)]
     listen_port: Option<u16>,
-}
 
-#[derive(Parser)]
-#[command(name = "iroh-keyserver-cli")]
-#[command(about = "CLI for iroh-keyserver", long_about = None)]
-struct Cli {
-    #[command(flatten)]
-    config: Config,
-
-    #[command(subcommand)]
-    command: Commands,
+    /// Base URL to use for redirects during authentication (default: http://localhost:8080)
+    #[clap(long)]
+    redirect_base_url: Option<String>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
     /// Authenticate
     Auth,
-    /// List keys
-    List,
+    /// List sessions
+    ListSessions,
+    /// Revoke a session
+    RevokeSession(RevokeSessionArgs),
+}
+
+#[derive(Args)]
+struct RevokeSessionArgs {
+    /// ID of the session to revoke
+    session_id: String,
 }
 
 const ENV_PREFIX: &str = "APP_";
@@ -81,12 +95,18 @@ async fn main() -> anyhow::Result<()> {
         .merge(Env::prefixed(ENV_PREFIX))
         .extract::<Config>()?;
 
+    let base_url = config
+        .base_url
+        .as_deref()
+        .unwrap_or("http://localhost:3000")
+        .trim_end_matches('/');
+
     match command {
         Commands::Auth => {
             let token = auth(&config).await?;
 
             let session_info = Client::new()
-                .get("http://localhost:3000/api/session/info")
+                .get(format!("{base_url}/api/sessions/info"))
                 .bearer_auth(&token)
                 .send()
                 .await
@@ -97,8 +117,41 @@ async fn main() -> anyhow::Result<()> {
 
             log::info!("Session info: {:?}", session_info);
         }
-        Commands::List => {
-            println!("List command executed");
+        Commands::ListSessions => {
+            let token = auth(&config).await?;
+
+            let sessions = Client::new()
+                .get(format!("{base_url}/api/sessions/list"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .context("Failed to send request to session list endpoint")?
+                .json::<Value>()
+                .await
+                .context("Failed to parse session list response")?;
+
+            log::info!("Sessions: {:?}", sessions);
+        }
+        Commands::RevokeSession(RevokeSessionArgs { session_id }) => {
+            let token = auth(&config).await?;
+
+            let response = Client::new()
+                .post(format!("{base_url}/api/sessions/revoke"))
+                .bearer_auth(&token)
+                .json(&json!({ "session_id": session_id }))
+                .send()
+                .await
+                .context("Failed to send request to session revoke endpoint")?;
+
+            if response.status().is_success() {
+                log::info!("Session revoked successfully");
+            } else {
+                log::error!(
+                    "Failed to revoke session. Status: {}, Error: {:?}",
+                    response.status(),
+                    response.text().await
+                );
+            }
         }
     }
 
@@ -149,6 +202,13 @@ async fn auth_with_code(config: &Config) -> anyhow::Result<String> {
 
     let listen_port = config.listen_port.unwrap_or(8080);
 
+    let redirect_base_url = config
+        .redirect_base_url
+        .as_deref()
+        .unwrap_or("http://localhost:8080")
+        .trim_end_matches('/')
+        .to_owned();
+
     // Generate PKCE code verifier and challenge
     let code_verifier: [u8; 32] = rand::random::<[u8; 32]>();
     let code_challenge = BASE64_URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier));
@@ -160,7 +220,7 @@ async fn auth_with_code(config: &Config) -> anyhow::Result<String> {
         .map(char::from)
         .collect();
 
-    let redirect_uri = format!("http://{}:{}/callback", listen_address, listen_port);
+    let redirect_uri = format!("{}/callback", redirect_base_url);
 
     // Generate the authorization URL
     let auth_url = format!(

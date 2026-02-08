@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+iroh-oidc = { path = "../iroh-oidc" }
+
 anyhow = "1.0.101"
 axum = "0.8.8"
 base64 = "0.22.1"
@@ -18,3 +20,4 @@ sha2 = "0.10.9"
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
 url = "2.5.8"
 webbrowser = "1.1.0"
+serde_json = "1.0.149"

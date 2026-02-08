@@ -33,12 +33,13 @@ pub enum CreateSessionFatalError {
 pub async fn create_session(
     database: &Database,
     user_id: Uuid,
-) -> Result<String, CreateSessionFatalError> {
+) -> Result<(Uuid, String), CreateSessionFatalError> {
+    let id = Uuid::new_v4();
     let (plain_token, hashed_token) = generate_token();
 
-    database.create_session(&hashed_token, user_id).await?;
+    database.create_session(id, &hashed_token, user_id).await?;
 
-    Ok(plain_token)
+    Ok((id, plain_token))
 }
 
 #[derive(Debug, Snafu)]
@@ -70,7 +71,7 @@ pub async fn validate_session(
 
     let hashed_token = hash_token(token);
 
-    let session = database.get_session(&hashed_token).await?;
+    let session = database.get_session_by_token_hash(&hashed_token).await?;
     let Some(session) = session else {
         return Ok(Err(ValidateSessionLocalError::Invalid));
     };

@@ -28,6 +28,7 @@ pub struct AuthCode {
 }
 
 pub struct Session {
+    pub id: Uuid,
     pub token_hash: Vec<u8>,
     pub last_used_at: i64,
     pub user_id: Uuid,
@@ -273,14 +274,20 @@ impl Database {
         Ok(User { id: user_id })
     }
 
-    pub async fn create_session(&self, token_hash: &[u8], user_id: Uuid) -> sqlx::Result<()> {
+    pub async fn create_session(
+        &self,
+        id: Uuid,
+        token_hash: &[u8],
+        user_id: Uuid,
+    ) -> sqlx::Result<()> {
         let last_used_at = now();
 
         sqlx::query!(
             r#"
-            INSERT INTO sessions (token_hash, last_used_at, user_id)
-            VALUES (?, ?, ?)
+            INSERT INTO sessions (id, token_hash, last_used_at, user_id)
+            VALUES (?, ?, ?, ?)
             "#,
+            id,
             token_hash,
             last_used_at,
             user_id
@@ -291,11 +298,14 @@ impl Database {
         Ok(())
     }
 
-    pub async fn get_session(&self, token_hash: &[u8]) -> sqlx::Result<Option<Session>> {
+    pub async fn get_session_by_token_hash(
+        &self,
+        token_hash: &[u8],
+    ) -> sqlx::Result<Option<Session>> {
         let row = sqlx::query_as!(
             Session,
             r#"
-            SELECT token_hash, last_used_at, user_id as "user_id: Uuid"
+            SELECT id as "id: Uuid", token_hash, last_used_at, user_id as "user_id: Uuid"
             FROM sessions
             WHERE token_hash = ?
             "#,
@@ -323,6 +333,41 @@ impl Database {
         .await?;
 
         Ok(())
+    }
+
+    pub async fn get_sessions_by_user_id(&self, user_id: Uuid) -> sqlx::Result<Vec<Session>> {
+        let rows = sqlx::query_as!(
+            Session,
+            r#"
+            SELECT id as "id: Uuid", token_hash, last_used_at, user_id as "user_id: Uuid"
+            FROM sessions
+            WHERE user_id = ?
+            "#,
+            user_id
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn delete_session_by_session_id_and_user_id(
+        &self,
+        session_id: Uuid,
+        user_id: Uuid,
+    ) -> sqlx::Result<bool> {
+        let res = sqlx::query!(
+            r#"
+            DELETE FROM sessions
+            WHERE id = ? AND user_id = ?
+            "#,
+            session_id,
+            user_id
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(res.rows_affected() > 0)
     }
 }
 
