@@ -1,33 +1,89 @@
-use crate::{AppState, database::Database, session::SessionGuard};
+use crate::{
+    AppState,
+    database::Database,
+    session::{AuthError, SessionGuard},
+};
 use axum::{
     Json,
-    extract::State,
+    extract::{State, rejection::JsonRejection},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use monostate::MustBe;
 use serde::{Deserialize, Serialize};
 use snafu::Snafu;
 use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SessionInfoResponse {
+#[serde(untagged)]
+pub enum SessionInfoResponse {
+    Success(SessionInfoSuccess),
+    AuthError(AuthError),
+}
+
+impl IntoResponse for SessionInfoResponse {
+    fn into_response(self) -> Response {
+        match self {
+            SessionInfoResponse::Success(success) => Json(success).into_response(),
+            SessionInfoResponse::AuthError(auth_error) => auth_error.into_response(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionInfoSuccess {
     pub user_id: Uuid,
 }
 
 pub(crate) async fn api_session_info(
-    SessionGuard { user_id }: SessionGuard,
-) -> Json<SessionInfoResponse> {
+    session: Result<SessionGuard, AuthError>,
+) -> SessionInfoResponse {
+    let SessionGuard { user_id } = match session {
+        Ok(session_guard) => session_guard,
+        Err(auth_error) => return SessionInfoResponse::AuthError(auth_error),
+    };
+
     let response = session_info(user_id).await;
 
-    Json(response)
+    SessionInfoResponse::Success(response)
 }
 
-async fn session_info(user_id: Uuid) -> SessionInfoResponse {
-    SessionInfoResponse { user_id }
+async fn session_info(user_id: Uuid) -> SessionInfoSuccess {
+    SessionInfoSuccess { user_id }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SessionListResponse {
+#[serde(untagged)]
+pub enum SessionListResponse {
+    Success(SessionListSuccess),
+    InternalServerError {
+        error: MustBe!("internal_server_error"),
+    },
+    AuthError(AuthError),
+}
+
+impl SessionListResponse {
+    fn internal_server_error() -> Self {
+        SessionListResponse::InternalServerError {
+            error: MustBe!("internal_server_error"),
+        }
+    }
+}
+
+impl IntoResponse for SessionListResponse {
+    fn into_response(self) -> Response {
+        match self {
+            SessionListResponse::Success(success) => Json(success).into_response(),
+            SessionListResponse::InternalServerError { .. } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(self)).into_response()
+            }
+            SessionListResponse::AuthError(auth_error) => auth_error.into_response(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionListSuccess {
     pub sessions: Vec<SessionListSession>,
 }
 
@@ -40,21 +96,19 @@ pub struct SessionListSession {
 
 pub(crate) async fn api_session_list(
     State(state): State<AppState>,
-    SessionGuard { user_id }: SessionGuard,
-) -> Response {
+    session: Result<SessionGuard, AuthError>,
+) -> SessionListResponse {
+    let SessionGuard { user_id } = match session {
+        Ok(session_guard) => session_guard,
+        Err(auth_error) => return SessionListResponse::AuthError(auth_error),
+    };
+
     match session_list(&state.database, user_id).await {
-        Ok(session_list) => Json(session_list).into_response(),
+        Ok(session_list) => SessionListResponse::Success(session_list),
 
         Err(e) => {
             log::error!("Failed to get session list: {:?}", e);
-
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": "internal_server_error",
-                })),
-            )
-                .into_response()
+            SessionListResponse::internal_server_error()
         }
     }
 }
@@ -68,7 +122,7 @@ enum SessionListFatalError {
 async fn session_list(
     database: &Database,
     user_id: Uuid,
-) -> Result<SessionListResponse, SessionListFatalError> {
+) -> Result<SessionListSuccess, SessionListFatalError> {
     let sessions = database
         .get_sessions_by_user_id(user_id)
         .await?
@@ -80,7 +134,7 @@ async fn session_list(
         })
         .collect();
 
-    Ok(SessionListResponse { sessions })
+    Ok(SessionListSuccess { sessions })
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -88,33 +142,93 @@ pub struct SessionRevokeRequest {
     pub session_id: Uuid,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SessionRevokeResponse {
+    Success {
+        success: MustBe!(true),
+    },
+    NotFound {
+        error: MustBe!("not_found"),
+    },
+    InternalServerError {
+        error: MustBe!("internal_server_error"),
+    },
+    AuthError(AuthError),
+    InvalidRequest {
+        error: MustBe!("invalid_request"),
+        error_description: String,
+    },
+}
+
+impl SessionRevokeResponse {
+    fn success() -> Self {
+        SessionRevokeResponse::Success {
+            success: MustBe!(true),
+        }
+    }
+    fn not_found() -> Self {
+        SessionRevokeResponse::NotFound {
+            error: MustBe!("not_found"),
+        }
+    }
+    fn internal_server_error() -> Self {
+        SessionRevokeResponse::InternalServerError {
+            error: MustBe!("internal_server_error"),
+        }
+    }
+}
+
+impl From<JsonRejection> for SessionRevokeResponse {
+    fn from(rejection: JsonRejection) -> Self {
+        SessionRevokeResponse::InvalidRequest {
+            error: MustBe!("invalid_request"),
+            error_description: rejection.to_string(),
+        }
+    }
+}
+
+impl IntoResponse for SessionRevokeResponse {
+    fn into_response(self) -> Response {
+        match self {
+            SessionRevokeResponse::Success { .. } => Json(self).into_response(),
+            SessionRevokeResponse::NotFound { .. } => {
+                (StatusCode::NOT_FOUND, Json(self)).into_response()
+            }
+            SessionRevokeResponse::InternalServerError { .. } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(self)).into_response()
+            }
+            SessionRevokeResponse::AuthError(auth_error) => auth_error.into_response(),
+            SessionRevokeResponse::InvalidRequest { .. } => {
+                (StatusCode::BAD_REQUEST, Json(self)).into_response()
+            }
+        }
+    }
+}
+
 pub(crate) async fn api_session_revoke(
     State(state): State<AppState>,
-    SessionGuard { user_id }: SessionGuard,
-    Json(request): Json<SessionRevokeRequest>,
-) -> Response {
-    match session_revoke(&state.database, user_id, request.session_id).await {
-        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+    session: Result<SessionGuard, AuthError>,
+    request: Result<Json<SessionRevokeRequest>, JsonRejection>,
+) -> SessionRevokeResponse {
+    let SessionGuard { user_id } = match session {
+        Ok(session_guard) => session_guard,
+        Err(auth_error) => return SessionRevokeResponse::AuthError(auth_error),
+    };
 
-        Ok(Err(SessionRevokeLocalError::SessionIdNotFound)) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "not_found",
-                "error_description": "Session not found"
-            })),
-        )
-            .into_response(),
+    let request = match request {
+        Ok(request) => request,
+        Err(json_error) => return SessionRevokeResponse::from(json_error),
+    };
+
+    match session_revoke(&state.database, user_id, request.session_id).await {
+        Ok(Ok(())) => SessionRevokeResponse::success(),
+
+        Ok(Err(SessionRevokeLocalError::SessionIdNotFound)) => SessionRevokeResponse::not_found(),
 
         Err(e) => {
             log::error!("Failed to revoke session: {:?}", e);
-
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": "internal_server_error",
-                })),
-            )
-                .into_response()
+            SessionRevokeResponse::internal_server_error()
         }
     }
 }

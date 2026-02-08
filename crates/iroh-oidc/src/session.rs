@@ -5,6 +5,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use monostate::MustBe;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use snafu::Snafu;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -95,8 +97,49 @@ pub struct SessionGuard {
     pub user_id: Uuid,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AuthError {
+    Unauthorized {
+        error: MustBe!("unauthorized"),
+        error_description: String,
+    },
+    InternalServerError {
+        error: MustBe!("internal_server_error"),
+    },
+}
+
+impl AuthError {
+    fn unauthorized() -> Self {
+        AuthError::Unauthorized {
+            error: MustBe!("unauthorized"),
+            error_description: "Invalid or expired session token".to_string(),
+        }
+    }
+
+    fn internal_server_error() -> Self {
+        AuthError::InternalServerError {
+            error: MustBe!("internal_server_error"),
+        }
+    }
+}
+
+impl IntoResponse for AuthError {
+    fn into_response(self) -> Response {
+        match self {
+            AuthError::Unauthorized { .. } => {
+                (StatusCode::UNAUTHORIZED, Json(self)).into_response()
+            }
+
+            AuthError::InternalServerError { .. } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(self)).into_response()
+            }
+        }
+    }
+}
+
 impl axum::extract::FromRequestParts<AppState> for SessionGuard {
-    type Rejection = Response;
+    type Rejection = AuthError;
 
     async fn from_request_parts(
         parts: &mut axum::http::request::Parts,
@@ -104,75 +147,34 @@ impl axum::extract::FromRequestParts<AppState> for SessionGuard {
     ) -> Result<Self, Self::Rejection> {
         let auth_header = parts.headers.get(axum::http::header::AUTHORIZATION);
         let Some(auth_header) = auth_header else {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({
-                    "error": "unauthorized",
-                    "error_description": "Missing Authorization header"
-                })),
-            )
-                .into_response());
+            return Err(AuthError::unauthorized());
         };
 
         let auth_header = match auth_header.to_str() {
             Ok(s) => s,
             Err(_) => {
-                return Err((
-                    StatusCode::UNAUTHORIZED,
-                    Json(serde_json::json!({
-                        "error": "unauthorized",
-                        "error_description": "Invalid or expired access token"
-                    })),
-                )
-                    .into_response());
+                return Err(AuthError::unauthorized());
             }
         };
 
         let token = match auth_header.strip_prefix("Bearer ") {
             Some(t) => t,
             None => {
-                return Err((
-                    StatusCode::UNAUTHORIZED,
-                    Json(serde_json::json!({
-                        "error": "unauthorized",
-                        "error_description": "Invalid or expired access token"
-                    })),
-                )
-                    .into_response());
+                return Err(AuthError::unauthorized());
             }
         };
 
         let user_id = match validate_session(&state.database, token).await {
             Ok(Ok(user_id)) => user_id,
             Ok(Err(ValidateSessionLocalError::Expired)) => {
-                return Err((
-                    StatusCode::UNAUTHORIZED,
-                    Json(serde_json::json!({
-                        "error": "unauthorized",
-                        "error_description": "Invalid or expired access token"
-                    })),
-                )
-                    .into_response());
+                return Err(AuthError::unauthorized());
             }
             Ok(Err(ValidateSessionLocalError::Invalid)) => {
-                return Err((
-                    StatusCode::UNAUTHORIZED,
-                    Json(serde_json::json!({
-                        "error": "unauthorized",
-                        "error_description": "Invalid or expired access token"
-                    })),
-                )
-                    .into_response());
+                return Err(AuthError::unauthorized());
             }
             Err(e) => {
                 log::error!("Failed to validate session: {:?}", e);
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "error": "internal_server_error",
-                    })),
-                )
-                    .into_response());
+                return Err(AuthError::internal_server_error());
             }
         };
 

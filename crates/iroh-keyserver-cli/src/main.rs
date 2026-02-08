@@ -7,17 +7,20 @@ use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use clap::{Args, Parser, Subcommand};
 use figment::Figment;
 use figment::providers::{Env, Serialized};
-use iroh_oidc::api::SessionListResponse;
+use iroh_oidc::api::{
+    SessionInfoResponse, SessionListResponse, SessionRevokeRequest, SessionRevokeResponse,
+};
 use rand::{Rng, distributions::Alphanumeric};
-use reqwest::{Client, StatusCode};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
+use uuid::Uuid;
 
 #[derive(Parser)]
 #[command(name = "iroh-keyserver-cli")]
@@ -74,7 +77,7 @@ enum Commands {
 #[derive(Args)]
 struct RevokeSessionArgs {
     /// ID of the session to revoke
-    session_id: String,
+    session_id: Uuid,
 }
 
 const ENV_PREFIX: &str = "APP_";
@@ -105,14 +108,19 @@ async fn main() -> anyhow::Result<()> {
         Commands::Auth => {
             let token = auth(&config).await?;
 
-            let session_info = Client::new()
+            let response = Client::new()
                 .get(format!("{base_url}/api/sessions/info"))
                 .bearer_auth(&token)
                 .send()
                 .await
                 .context("Failed to send request to session info endpoint")?
-                .json::<HashMap<String, String>>()
+                .json::<Value>()
                 .await
+                .context("Failed to get session info response")?;
+
+            log::info!("Session info raw response: {:?}", response);
+
+            let session_info: SessionInfoResponse = serde_json::from_value(response)
                 .context("Failed to parse session info response")?;
 
             log::info!("Session info: {:?}", session_info);
@@ -120,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::ListSessions => {
             let token = auth(&config).await?;
 
-            let sessions = Client::new()
+            let response = Client::new()
                 .get(format!("{base_url}/api/sessions/list"))
                 .bearer_auth(&token)
                 .send()
@@ -128,9 +136,14 @@ async fn main() -> anyhow::Result<()> {
                 .context("Failed to send request to session list endpoint")?
                 .json::<Value>()
                 .await
+                .context("Failed to get session list response")?;
+
+            log::info!("Session list raw response: {:?}", response);
+
+            let response: SessionListResponse = serde_json::from_value(response)
                 .context("Failed to parse session list response")?;
 
-            log::info!("Sessions: {:?}", sessions);
+            log::info!("Session list response: {:?}", response);
         }
         Commands::RevokeSession(RevokeSessionArgs { session_id }) => {
             let token = auth(&config).await?;
@@ -138,20 +151,20 @@ async fn main() -> anyhow::Result<()> {
             let response = Client::new()
                 .post(format!("{base_url}/api/sessions/revoke"))
                 .bearer_auth(&token)
-                .json(&json!({ "session_id": session_id }))
+                .json(&SessionRevokeRequest { session_id })
                 .send()
                 .await
-                .context("Failed to send request to session revoke endpoint")?;
+                .context("Failed to send request to session revoke endpoint")?
+                .json::<Value>()
+                .await
+                .context("Failed to get session revoke response")?;
 
-            if response.status().is_success() {
-                log::info!("Session revoked successfully");
-            } else {
-                log::error!(
-                    "Failed to revoke session. Status: {}, Error: {:?}",
-                    response.status(),
-                    response.text().await
-                );
-            }
+            log::info!("Session revoke raw response: {:?}", response);
+
+            let response: SessionRevokeResponse = serde_json::from_value(response)
+                .context("Failed to parse session revoke response")?;
+
+            log::info!("Session revoke response: {:?}", response);
         }
     }
 
