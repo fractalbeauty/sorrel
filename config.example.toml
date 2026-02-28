@@ -1,0 +1,21 @@
+base_url = "http://localhost:3000"
+
+# Source of client IP for device code requests.
+# See https://docs.rs/axum-client-ip/latest/axum_client_ip/
+ip_source = "ConnectInfo"
+
+# 32-byte secret used for hashing user codes in the device flow, formatted as hex.
+user_code_secret = "8c94b8b93b14301dc3feb777cc166ad37badd9336c6a73ac6b4484084b70b6cc"
+
+[providers.example]
+issuer_url = ""
+client_id = ""
+client_secret = ""
+scopes = ["openid"]
+
+[[clients]]
+name = "sorrel-cli"
+client_id = "sorrel-cli"
+redirect_urls = [
+    "http://localhost:8080/callback",
+]
