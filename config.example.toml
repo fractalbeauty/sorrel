@@ -1,3 +1,5 @@
+database_path = "sqlite://./local/database.sqlite"
+
 base_url = "http://localhost:3000"
 
 # Source of client IP for device code requests.

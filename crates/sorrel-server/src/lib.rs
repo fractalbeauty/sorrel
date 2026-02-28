@@ -67,6 +67,11 @@ struct OidcState {
 #[serde_as]
 #[derive(Debug, Clone, Deserialize)]
 struct Config {
+    /// Path to SQLite database file.
+    ///
+    /// Example: "sqlite://./local/database.sqlite"
+    database_path: String,
+
     listen_address: IpAddr,
     listen_port: u16,
     base_url: String,
@@ -163,7 +168,7 @@ pub async fn run(config_files: Vec<PathBuf>) -> anyhow::Result<()> {
     };
     let config = Arc::new(config);
 
-    let database = database::Database::open_file("./local/database.sqlite").await?;
+    let database = database::Database::open_file(&config.database_path).await?;
 
     let providers = init_providers(&config.base_url, &config.providers).await?;
 

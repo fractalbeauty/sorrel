@@ -64,7 +64,7 @@ impl Database {
     pub async fn open_file(path: &str) -> anyhow::Result<Self> {
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
-            .connect(&format!("sqlite://{}", path))
+            .connect(path)
             .await?;
 
         let db = Database { pool };
