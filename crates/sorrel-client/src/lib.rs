@@ -57,7 +57,7 @@ impl Client {
     }
 
     pub async fn session_info(&self) -> Result<SessionInfoResponse, RequestError> {
-        let url = self.base_url.join("/api/sessions/info").unwrap();
+        let url = self.base_url.join("api/sessions/info").unwrap();
 
         let response = self.client.get(url).send().await.context(SendSnafu)?;
         response
@@ -67,7 +67,7 @@ impl Client {
     }
 
     pub async fn list_sessions(&self) -> Result<SessionListResponse, RequestError> {
-        let url = self.base_url.join("/api/sessions/list").unwrap();
+        let url = self.base_url.join("api/sessions/list").unwrap();
 
         let response = self.client.get(url).send().await.context(SendSnafu)?;
         response
@@ -80,7 +80,7 @@ impl Client {
         &self,
         session_id: Uuid,
     ) -> Result<SessionRevokeResponse, RequestError> {
-        let url = self.base_url.join("/api/sessions/revoke").unwrap();
+        let url = self.base_url.join("api/sessions/revoke").unwrap();
 
         let response = self
             .client
@@ -96,7 +96,7 @@ impl Client {
     }
 
     pub async fn list_keys(&self) -> Result<ListKeysResponse, RequestError> {
-        let url = self.base_url.join("/api/keys").unwrap();
+        let url = self.base_url.join("api/keys").unwrap();
 
         let response = self.client.get(url).send().await.context(SendSnafu)?;
         response
@@ -106,7 +106,7 @@ impl Client {
     }
 
     pub async fn set_key(&self, request: SetKeyRequest) -> Result<SetKeyResponse, RequestError> {
-        let url = self.base_url.join("/api/keys").unwrap();
+        let url = self.base_url.join("api/keys").unwrap();
 
         let response = self
             .client

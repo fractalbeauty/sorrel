@@ -8,6 +8,7 @@ use clap::{Args, Parser, Subcommand};
 use figment::Figment;
 use figment::providers::{Env, Serialized};
 use rand::{Rng, distributions::Alphanumeric};
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sorrel_client::Client;
@@ -244,14 +245,21 @@ async fn auth_with_code(config: &Config) -> anyhow::Result<String> {
 
     // Generate the authorization URL
     let device_name = "sorrel-cli";
-    let auth_url = format!(
-        "{}/api/oauth/authorize?client_id={}&response_type=code&redirect_uri={}&code_challenge={}&code_challenge_method=S256&state={}&device_name={}",
-        base_url, client_id, redirect_uri, code_challenge, csrf_token, device_name
-    );
+    let auth_url = {
+        let mut auth_url = base_url
+            .join("api/oauth/authorize")
+            .context("Failed to construct authorization URL")?;
+        let query = format!(
+            "client_id={}&response_type=code&redirect_uri={}&code_challenge={}&code_challenge_method=S256&state={}&device_name={}",
+            client_id, redirect_uri, code_challenge, csrf_token, device_name
+        );
+        auth_url.set_query(Some(&query));
+        auth_url
+    };
 
     if config.open {
         log::info!("Opening {}", auth_url);
-        let _ = webbrowser::open(&auth_url);
+        let _ = webbrowser::open(auth_url.as_str());
     } else {
         log::info!("To authenticate, open {}", auth_url);
     }
@@ -295,12 +303,8 @@ async fn auth_with_code(config: &Config) -> anyhow::Result<String> {
                         ("redirect_uri", &redirect_uri),
                         ("code_verifier", &code_verifier),
                     ]);
-                    let token_response = match client
-                        .post(format!("{}/api/oauth/token", base_url))
-                        .json(&req)
-                        .send()
-                        .await
-                    {
+                    let token_url = base_url.join("api/oauth/token").unwrap();
+                    let token_response = match client.post(token_url).json(&req).send().await {
                         Ok(res) => res,
                         Err(e) => {
                             let mut result = result.lock().unwrap();
@@ -309,6 +313,19 @@ async fn auth_with_code(config: &Config) -> anyhow::Result<String> {
                             return Html("Authentication failed. You can close this tab.");
                         }
                     };
+
+                    let token_response_status = token_response.status();
+                    if token_response_status != StatusCode::OK {
+                        let text = token_response.text().await.unwrap_or_default();
+                        let mut result = result.lock().unwrap();
+                        *result = Some(Err(anyhow::anyhow!(
+                            "Token request failed with status {}: {}",
+                            token_response_status,
+                            text
+                        )));
+                        shutdown.notify_waiters();
+                        return Html("Authentication failed. You can close this tab.");
+                    }
 
                     let mut token_response =
                         match token_response.json::<HashMap<String, String>>().await {

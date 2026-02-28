@@ -71,10 +71,12 @@ struct Config {
     listen_port: u16,
     base_url: String,
 
-    /// Source of client IP for device code requests
+    /// Source of client IP for device code requests.
+    ///
+    /// See https://docs.rs/axum-client-ip/latest/axum_client_ip
     ip_source: ClientIpSource,
 
-    /// 32-byte secret, formatted as hex
+    /// 32-byte secret, formatted as hex.
     #[serde_as(as = "serde_with::hex::Hex")]
     user_code_secret: [u8; 32],
 
