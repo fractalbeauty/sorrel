@@ -31,6 +31,7 @@ use serde_with::serde_as;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tower_sessions::cookie::time::Duration;
@@ -143,14 +144,21 @@ where
     }
 }
 
-pub async fn run() -> anyhow::Result<()> {
+pub async fn run(config_files: Vec<PathBuf>) -> anyhow::Result<()> {
     env_logger::init();
 
-    let config = Figment::new()
-        .merge(figment::providers::Toml::file("local/config.toml"))
-        .merge(figment::providers::Env::prefixed("APP_"))
-        .join(figment::providers::Toml::file("config.default.toml"))
-        .extract::<Config>()?;
+    let config = {
+        let mut config =
+            Figment::new().merge(figment::providers::Toml::file("config.default.toml"));
+
+        for config_file in config_files {
+            config = config.merge(figment::providers::Toml::file(config_file));
+        }
+
+        config
+            .merge(figment::providers::Env::prefixed("APP_"))
+            .extract::<Config>()?
+    };
     let config = Arc::new(config);
 
     let database = database::Database::open_file("./local/database.sqlite").await?;
