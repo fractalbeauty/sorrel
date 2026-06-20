@@ -18,3 +18,7 @@ Device management server for use with Iroh
 - `cargo run -p sorrel-cli -- revoke-session <session id>`
 - `cargo run -p sorrel-cli -- list-keys`
 - `cargo run -p sorrel-cli -- set-key <application> <public key>`
+
+### Configuring providers
+
+- Redirect path should be `/oidc/callback/<provider>`
