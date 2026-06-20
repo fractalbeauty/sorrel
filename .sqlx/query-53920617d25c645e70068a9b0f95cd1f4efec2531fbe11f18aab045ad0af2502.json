@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT k.public_key, k.app, s.id as \"session_id: Uuid\", s.last_used_at as \"session_last_used_at: i64\", s.device_name as \"session_device_name: String\"\n            FROM keys k\n            JOIN sessions s ON k.session_id = s.id\n            WHERE s.user_id = ?\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "public_key",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "app",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "session_id: Uuid",
+        "ordinal": 2,
+        "type_info": "Blob"
+      },
+      {
+        "name": "session_last_used_at: i64",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "session_device_name: String",
+        "ordinal": 4,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "53920617d25c645e70068a9b0f95cd1f4efec2531fbe11f18aab045ad0af2502"
+}

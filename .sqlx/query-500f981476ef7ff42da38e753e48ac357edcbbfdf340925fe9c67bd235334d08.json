@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT device_code_hash, user_code_hash, expires_at, user_id as \"user_id: Uuid\", is_used, device_name_hint, device_ip_hint\n            FROM device_codes\n            WHERE user_code_hash = ?\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "device_code_hash",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "user_code_hash",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "expires_at",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "user_id: Uuid",
+        "ordinal": 3,
+        "type_info": "Blob"
+      },
+      {
+        "name": "is_used",
+        "ordinal": 4,
+        "type_info": "Bool"
+      },
+      {
+        "name": "device_name_hint",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "device_ip_hint",
+        "ordinal": 6,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "500f981476ef7ff42da38e753e48ac357edcbbfdf340925fe9c67bd235334d08"
+}

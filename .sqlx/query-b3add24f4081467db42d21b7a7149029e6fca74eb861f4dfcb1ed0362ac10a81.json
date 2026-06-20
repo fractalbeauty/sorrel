@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT 1 as \"exists: bool\" FROM device_codes\n            WHERE user_code_hash = ?\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "exists: bool",
+        "ordinal": 0,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "b3add24f4081467db42d21b7a7149029e6fca74eb861f4dfcb1ed0362ac10a81"
+}

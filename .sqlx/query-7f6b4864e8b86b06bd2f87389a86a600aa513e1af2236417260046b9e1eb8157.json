@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            UPDATE device_codes\n            SET user_id = ?\n            WHERE device_code_hash = ?\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "7f6b4864e8b86b06bd2f87389a86a600aa513e1af2236417260046b9e1eb8157"
+}

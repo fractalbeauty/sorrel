@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT auth_code_hash, client_id, redirect_uri, code_challenge, expires_at, user_id as \"user_id: Uuid\", is_used, device_name\n            FROM auth_codes\n            WHERE auth_code_hash = ?\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "auth_code_hash",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "client_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "redirect_uri",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "code_challenge",
+        "ordinal": 3,
+        "type_info": "Blob"
+      },
+      {
+        "name": "expires_at",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "user_id: Uuid",
+        "ordinal": 5,
+        "type_info": "Blob"
+      },
+      {
+        "name": "is_used",
+        "ordinal": 6,
+        "type_info": "Bool"
+      },
+      {
+        "name": "device_name",
+        "ordinal": 7,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "ce86c05b6c889153de271536e634df15b5a2bf120b579ff2263960e2722f3fbd"
+}

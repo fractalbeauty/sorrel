@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT user_id as \"user_id: Uuid\" FROM credentials\n            WHERE provider = ? AND subject = ?\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "user_id: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1a5d5ad98b2b405d3c7de126fcc645259dbd1e38ba10702016f24157090e2475"
+}

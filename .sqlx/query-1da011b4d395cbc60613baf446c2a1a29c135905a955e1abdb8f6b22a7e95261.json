@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            UPDATE sessions\n            SET last_used_at = ?\n            WHERE token_hash = ?\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "1da011b4d395cbc60613baf446c2a1a29c135905a955e1abdb8f6b22a7e95261"
+}

@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT id as \"id: Uuid\", token_hash, last_used_at, user_id as \"user_id: Uuid\", device_name\n            FROM sessions\n            WHERE token_hash = ?\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "token_hash",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "last_used_at",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "user_id: Uuid",
+        "ordinal": 3,
+        "type_info": "Blob"
+      },
+      {
+        "name": "device_name",
+        "ordinal": 4,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "1f9c7e8200556da5f00c7aeade5fa8f580eec5d110cfe821f865963d7af124e0"
+}
