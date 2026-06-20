@@ -751,7 +751,6 @@ struct DeviceStartResponse {
     interval: i64,
 }
 
-#[axum::debug_handler]
 async fn oauth_device(
     State(state): State<AppState>,
     ClientIp(client_ip): ClientIp,
