@@ -10,6 +10,7 @@ use figment::providers::{Env, Serialized};
 use rand::{Rng, distributions::Alphanumeric};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sorrel_client::Client;
 use sorrel_client::api::keys::SetKeyRequest;
@@ -191,7 +192,8 @@ async fn auth(config: &Config) -> anyhow::Result<Cow<'_, str>> {
         None => {
             log::info!("No token provided, starting authentication flow");
 
-            let token = auth_with_code(config).await?;
+            let token = auth_using_pkce(config).await?;
+            // let token = auth_using_device_code(config).await?;
 
             log::info!(
                 "To reuse authentication, use:\n\n--token {token}\n\nor\n\nexport {ENV_PREFIX}TOKEN={token}"
@@ -202,7 +204,7 @@ async fn auth(config: &Config) -> anyhow::Result<Cow<'_, str>> {
     }
 }
 
-async fn auth_with_code(config: &Config) -> anyhow::Result<String> {
+async fn auth_using_pkce(config: &Config) -> anyhow::Result<String> {
     let base_url = config
         .base_url
         .clone()
@@ -378,4 +380,109 @@ async fn auth_with_code(config: &Config) -> anyhow::Result<String> {
     };
 
     Ok(token)
+}
+
+async fn auth_using_device_code(config: &Config) -> anyhow::Result<String> {
+    let base_url = config
+        .base_url
+        .clone()
+        .unwrap_or_else(|| Url::parse("http://localhost:3000").unwrap());
+
+    let device_name = "sorrel-cli";
+
+    let client = reqwest::Client::new();
+    let start_req = HashMap::from([("device_name", device_name)]);
+    let start_url = base_url.join("api/oauth/device").unwrap();
+    let start_response = client
+        .post(start_url)
+        .json(&start_req)
+        .send()
+        .await
+        .context("Failed to send device code start request")?;
+
+    let start_response_status = start_response.status();
+    if start_response_status != StatusCode::OK {
+        anyhow::bail!(
+            "Device code start request failed with status {}",
+            start_response_status
+        );
+    }
+
+    let start_response = start_response
+        .json::<HashMap<String, Value>>()
+        .await
+        .context("Failed to receive device code response")?;
+
+    let device_code = match start_response.get("device_code") {
+        Some(code) => code.as_str().context("device_code is not a string")?,
+        None => anyhow::bail!("Device code response missing device_code"),
+    };
+    let user_code = match start_response.get("user_code") {
+        Some(code) => code.as_str().context("user_code is not a string")?,
+        None => anyhow::bail!("Device code response missing user_code"),
+    };
+    let verification_uri = match start_response.get("verification_uri") {
+        Some(uri) => uri.as_str().context("verification_uri is not a string")?,
+        None => anyhow::bail!("Device code response missing verification_uri"),
+    };
+    let verification_uri_complete = match start_response.get("verification_uri_complete") {
+        Some(uri) => uri
+            .as_str()
+            .context("verification_uri_complete is not a string")?,
+        None => anyhow::bail!("Device code response missing verification_uri_complete"),
+    };
+
+    if config.open {
+        log::info!("Opening {}", verification_uri_complete);
+        let _ = webbrowser::open(verification_uri_complete);
+    } else {
+        log::info!(
+            "To authenticate, open {} and enter {}, or open {}",
+            verification_uri,
+            user_code,
+            verification_uri_complete
+        );
+    }
+
+    let access_token = loop {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+        let poll_req = HashMap::from([("device_code", device_code)]);
+        let poll_url = base_url.join("api/oauth/device/poll").unwrap();
+        let poll_response = client
+            .post(poll_url)
+            .json(&poll_req)
+            .send()
+            .await
+            .context("Failed to send device code poll request")?;
+
+        let poll_response_status = poll_response.status();
+        if poll_response_status != StatusCode::OK {
+            log::info!(
+                "Device code poll request returned status {}, retrying...",
+                poll_response_status
+            );
+            continue;
+        }
+
+        let mut poll_response = match poll_response.json::<HashMap<String, String>>().await {
+            Ok(res) => res,
+            Err(e) => {
+                log::error!("Failed to receive device code poll response: {:?}", e);
+                continue;
+            }
+        };
+
+        match poll_response.remove("access_token") {
+            Some(token) => {
+                break token;
+            }
+            None => {
+                log::info!("Device code poll response missing access_token, retrying...");
+                continue;
+            }
+        };
+    };
+
+    Ok(access_token)
 }
