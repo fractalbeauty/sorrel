@@ -155,6 +155,7 @@ pub async fn run(config_files: Vec<PathBuf>) -> anyhow::Result<()> {
     env_logger::init();
 
     let config = {
+        // TODO: config.default.toml isn't loaded in Docker
         let mut config =
             Figment::new().merge(figment::providers::Toml::file("config.default.toml"));
 

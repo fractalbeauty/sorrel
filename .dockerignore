@@ -1,0 +1,8 @@
+# Keep in sync with .gitignore
+/target
+
+.env
+/local
+# End keep in sync with .gitignore
+
+/nix

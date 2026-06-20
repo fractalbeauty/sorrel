@@ -1,4 +1,6 @@
+# Keep in sync with .dockerignore
 /target
 
 .env
 /local
+# End keep in sync with .dockerignore
