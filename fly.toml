@@ -1,0 +1,28 @@
+app = "sorrel"
+primary_region = "yyz"
+
+[build]
+
+[processes]
+app = "--config /mnt/secrets/config.toml"
+
+[http_service]
+internal_port = 8080
+force_https = true
+auto_stop_machines = "stop"
+auto_start_machines = true
+min_machines_running = 0
+processes = ["app"]
+
+[[vm]]
+memory = "256mb"
+cpus = 1
+memory_mb = 256
+
+[mounts]
+source = "sorrel_data"
+destination = "/mnt/data"
+
+[[files]]
+guest_path = "/mnt/secrets/config.toml"
+secret_name = "CONFIG_FILE"
