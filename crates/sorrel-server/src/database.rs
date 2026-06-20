@@ -1,5 +1,8 @@
-use sqlx::sqlite::SqlitePoolOptions;
-use std::time::{SystemTime, UNIX_EPOCH};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use std::{
+    str::FromStr,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -62,9 +65,11 @@ impl Database {
     }
 
     pub async fn open_file(path: &str) -> anyhow::Result<Self> {
+        let connect_options = SqliteConnectOptions::from_str(path)?.create_if_missing(true);
+
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
-            .connect(path)
+            .connect_with(connect_options)
             .await?;
 
         let db = Database { pool };
