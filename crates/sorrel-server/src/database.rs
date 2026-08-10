@@ -513,4 +513,34 @@ mod test {
         assert_eq!(keys[0].session_id, session_id);
         assert_eq!(keys[0].session_device_name.as_deref(), Some("test_device"));
     }
+
+    #[tokio::test]
+    async fn delete_session_cascades_to_keys() {
+        let database = super::Database::open_memory().await.unwrap();
+
+        let user = database
+            .authenticate("test_provider", "test_subject")
+            .await
+            .unwrap();
+
+        let session_id = Uuid::new_v4();
+        database
+            .create_session(session_id, b"test_token_hash", user.id, Some("test_device"))
+            .await
+            .unwrap();
+
+        database
+            .set_key_for_session(session_id, "test_app", b"test_public_key")
+            .await
+            .unwrap();
+
+        let deleted = database
+            .delete_session_by_session_id_and_user_id(session_id, user.id)
+            .await
+            .unwrap();
+        assert!(deleted);
+
+        let keys = database.get_keys_by_user_id(user.id).await.unwrap();
+        assert!(keys.is_empty());
+    }
 }
